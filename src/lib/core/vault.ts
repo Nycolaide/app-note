@@ -19,6 +19,8 @@ import {
   sanitizeName,
 } from "./path";
 import type { StorageProvider } from "./storage/provider";
+import { attachmentReferences } from "./attachment-references";
+import { sameBytes } from "./bytes";
 
 export interface FolderNode {
   path: string;
@@ -38,6 +40,11 @@ export interface NoteChanges {
 }
 
 export type TrashKind = "note" | "folder";
+
+export interface CleanupReport {
+  purgedTrashEntries: number;
+  removedAttachments: number;
+}
 
 export interface TrashEntry {
   id: string;
@@ -61,6 +68,10 @@ const TRASH = ".trash";
 const ATTACHMENTS = "attachments";
 const TRASH_METADATA = ".entry.json";
 const DEFAULT_NOTE_TITLE = "Sans titre";
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TRASH_RETENTION_MS = 30 * DAY_MS;
+const ORPHAN_ATTACHMENT_GRACE_MS = DAY_MS;
+
 
 export class Vault {
   readonly #storage: StorageProvider;
@@ -81,6 +92,23 @@ export class Vault {
 
   load(): Promise<void> {
     return this.#run(() => this.#reload());
+  }
+
+  async watchExternalChanges(onExternalChange: () => void): Promise<() => void> {
+    if (!this.#storage.watch) return () => undefined;
+
+    return this.#storage.watch((paths) => {
+      const relevant = paths.filter((path) => !isHiddenOrAttachment(path));
+      if (relevant.length === 0) return;
+
+      this.#run(async () => {
+        if (!(await this.#differsFromDisk(relevant))) return false;
+        await this.#reload();
+        return true;
+      }, "sync")
+        .then((changed) => changed && onExternalChange())
+        .catch(() => undefined);
+    });
   }
 
   synchronize<T>(task: () => Promise<T>, needsReload: (result: T) => boolean): Promise<T> {
@@ -124,6 +152,13 @@ export class Vault {
       await this.#storage.remove(joinPath(TRASH, id));
       this.#trash.delete(id);
     });
+  }
+
+  cleanUp(now: Date = new Date()): Promise<CleanupReport> {
+    return this.#run(async () => ({
+      purgedTrashEntries: await this.#purgeExpiredTrash(now.getTime() - TRASH_RETENTION_MS),
+      removedAttachments: await this.#removeOrphanAttachments(now.getTime() - ORPHAN_ATTACHMENT_GRACE_MS),
+    }));
   }
 
   emptyTrash(): Promise<void> {
@@ -208,6 +243,33 @@ export class Vault {
     return path;
   }
 
+  async importAttachment(name: string, data: Uint8Array<ArrayBuffer>): Promise<string> {
+    const path = joinPath(ATTACHMENTS, name);
+
+    if (!this.isAttachment(path)) {
+      throw new Error(`Pièce jointe invalide : ${name}`);
+    }
+
+    const existing = await this.#storage.readBinary(path).catch(() => null);
+
+    if (existing === null) {
+      await this.#storage.writeBinary(path, data);
+      return path;
+    }
+
+    return sameBytes(existing, data) ? path : this.saveAttachment(data, name);
+  }
+
+  importNote(folder: string, note: Note): Promise<Note> {
+    return this.#run(async () => {
+      this.#assertFolder(folder);
+      const path = this.#availablePath(folder, note.title, noteFileName);
+      const imported: Note = { ...note, path, title: titleFromPath(path) };
+      await this.#write(imported);
+      return imported;
+    });
+  }
+
   readAttachment(path: string): Promise<Uint8Array<ArrayBuffer>> {
     if (!this.isAttachment(path)) {
       return Promise.reject(new Error(`Pièce jointe invalide : ${path}`));
@@ -216,10 +278,11 @@ export class Vault {
     return this.#storage.readBinary(path);
   }
 
-  createFolder(parent: string, name: string): Promise<string> {
+  createFolder(parent: string, name: string, onConflict: "fail" | "rename" = "fail"): Promise<string> {
     return this.#run(async () => {
       this.#assertFolder(parent);
-      const path = joinPath(parent, sanitizeName(name));
+      const path =
+        onConflict === "rename" ? this.#availablePath(parent, name, sanitizeName) : joinPath(parent, sanitizeName(name));
       this.#assertAvailable(path);
 
       await this.#storage.createDirectory(path);
@@ -317,6 +380,27 @@ export class Vault {
     });
   }
 
+  async #differsFromDisk(paths: string[]): Promise<boolean> {
+    for (const path of paths) {
+      const stat = await this.#storage.stat(path).catch(() => null);
+      const note = this.#notes.get(path);
+
+      if (isNoteFile(baseName(path))) {
+        if (!stat !== !note) return true;
+        if (note && (await this.#storage.readText(path).catch(() => null)) !== serializeNote(note)) return true;
+      } else if (this.#folders.has(path) ? !stat : stat && (await this.#isDirectory(path))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async #isDirectory(path: string): Promise<boolean> {
+    const entries = await this.#storage.list(parentPath(path)).catch(() => []);
+    return entries.some((entry) => entry.name === baseName(path) && entry.kind === "directory");
+  }
+
   async #reload(): Promise<void> {
     this.#folders.clear();
     this.#notes.clear();
@@ -411,6 +495,62 @@ export class Vault {
     await this.#storage.move(path, joinPath(directory, baseName(path)));
 
     this.#trash.set(id, toTrashEntry(id, kind, metadata));
+  }
+
+  async #purgeExpiredTrash(deletedBefore: number): Promise<number> {
+    const expired = [...this.#trash.values()].filter((entry) => {
+      const deletedAt = Date.parse(entry.deletedAt);
+      return !Number.isNaN(deletedAt) && deletedAt < deletedBefore;
+    });
+
+    for (const entry of expired) {
+      await this.#storage.remove(joinPath(TRASH, entry.id));
+      this.#trash.delete(entry.id);
+    }
+
+    return expired.length;
+  }
+
+  async #removeOrphanAttachments(modifiedBefore: number): Promise<number> {
+    const contents = [...[...this.#notes.values()].map((note) => note.content), ...(await this.#trashedNoteContents())];
+    const referenced = new Set(contents.flatMap((content) => [...attachmentReferences(content)]));
+
+    let removed = 0;
+
+    for (const entry of await this.#storage.list(ATTACHMENTS)) {
+      if (entry.kind !== "file" || entry.name.startsWith(".") || referenced.has(entry.name)) continue;
+
+      const path = joinPath(ATTACHMENTS, entry.name);
+      const { modified } = await this.#storage.stat(path);
+
+      if (modified < modifiedBefore) {
+        await this.#storage.remove(path);
+        removed += 1;
+      }
+    }
+
+    return removed;
+  }
+
+  async #trashedNoteContents(): Promise<string[]> {
+    const contents: string[] = [];
+    const pending = [TRASH];
+
+    while (pending.length > 0) {
+      const directory = pending.pop()!;
+
+      for (const child of await this.#storage.list(directory)) {
+        const path = joinPath(directory, child.name);
+
+        if (child.kind === "directory") {
+          pending.push(path);
+        } else if (isNoteFile(child.name)) {
+          contents.push(await this.#storage.readText(path));
+        }
+      }
+    }
+
+    return contents;
   }
 
   async #scanTrash(): Promise<void> {
@@ -577,4 +717,8 @@ function compareNames(a: string, b: string): number {
 
 function normalizeForSearch(text: string): string {
   return text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+}
+
+function isHiddenOrAttachment(path: string): boolean {
+  return path === "" || isSameOrInside(path, ATTACHMENTS) || path.split("/").some((segment) => segment.startsWith("."));
 }

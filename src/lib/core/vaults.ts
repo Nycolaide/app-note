@@ -113,5 +113,5 @@ function mirrorRoot(descriptor: VaultDescriptor): string {
 }
 
 function changedLocally(report: SyncReport): boolean {
-  return report.downloaded + report.deletedLocally > 0;
+  return report.downloaded + report.deletedLocally + report.movedLocally > 0;
 }

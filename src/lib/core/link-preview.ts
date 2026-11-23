@@ -1,4 +1,5 @@
 import { defaultFetcher, type Fetcher } from "./http";
+import { LocalStorageProvider } from "./storage/local";
 
 export interface LinkPreview {
   url: string;
@@ -8,9 +9,25 @@ export interface LinkPreview {
   siteName: string;
 }
 
-
 export interface LinkPreviews {
   get(url: string): Promise<LinkPreview | null>;
+}
+
+export interface CachedLinkPreview {
+  preview: LinkPreview;
+  fetchedAt: number;
+}
+
+export type LinkPreviewCache = Record<string, CachedLinkPreview>;
+
+export interface LinkPreviewStore {
+  load(): Promise<LinkPreviewCache>;
+  save(cache: LinkPreviewCache): Promise<void>;
+}
+
+export interface LinkPreviewOptions {
+  fetcher?: Fetcher;
+  store?: LinkPreviewStore;
 }
 
 const TIMEOUT_MS = 8000;
@@ -18,6 +35,11 @@ const MAX_BYTES = 512 * 1024;
 const MAX_DESCRIPTION_LENGTH = 300;
 const HEAD_END = /<\/head\s*>/i;
 const WEB_URL = /^https?:\/\//i;
+const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_CACHED_PREVIEWS = 500;
+const SAVE_DELAY_MS = 2000;
+const CACHE_DIRECTORY = "cache";
+const CACHE_FILE = "link-previews.json";
 
 const TITLE_KEYS = ["og:title", "twitter:title"];
 const DESCRIPTION_KEYS = ["og:description", "twitter:description", "description"];
@@ -28,8 +50,54 @@ export function isWebUrl(url: string): boolean {
   return WEB_URL.test(url);
 }
 
-export function createLinkPreviews(fetcher: Fetcher = defaultFetcher): LinkPreviews {
+export function createLinkPreviewFileStore(): LinkPreviewStore {
+  const storage = new LocalStorageProvider(CACHE_DIRECTORY);
+
+  return {
+    async load() {
+      return JSON.parse(await storage.readText(CACHE_FILE));
+    },
+    async save(cache) {
+      await storage.createDirectory("");
+      await storage.writeText(CACHE_FILE, JSON.stringify(cache));
+    },
+  };
+}
+
+export function createLinkPreviews({ fetcher = defaultFetcher, store }: LinkPreviewOptions = {}): LinkPreviews {
   const cache = new Map<string, Promise<LinkPreview | null>>();
+  const persisted: Promise<LinkPreviewCache> = store ? store.load().catch(() => ({})) : Promise.resolve({});
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async function remember(url: string, preview: LinkPreview): Promise<void> {
+    if (!store) return;
+
+    const entries = await persisted;
+    entries[url] = { preview, fetchedAt: Date.now() };
+
+    const sorted = Object.entries(entries).sort(([, a], [, b]) => b.fetchedAt - a.fetchedAt);
+    for (const [stale] of sorted.slice(MAX_CACHED_PREVIEWS)) delete entries[stale];
+
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => store.save(entries).catch(() => undefined), SAVE_DELAY_MS);
+  }
+
+  async function resolve(url: string): Promise<LinkPreview | null> {
+    const stored = (await persisted)[url];
+
+    if (stored && Date.now() - stored.fetchedAt < CACHE_TTL_MS) {
+      return stored.preview;
+    }
+
+    try {
+      const preview = await load(url);
+      if (preview) await remember(url, preview);
+      return preview;
+    } catch (error) {
+      if (stored) return stored.preview;
+      throw error;
+    }
+  }
 
   async function load(url: string): Promise<LinkPreview | null> {
     const response = await fetcher(url, {
@@ -66,7 +134,7 @@ export function createLinkPreviews(fetcher: Fetcher = defaultFetcher): LinkPrevi
       let preview = cache.get(url);
 
       if (!preview) {
-        preview = load(url).catch(() => {
+        preview = resolve(url).catch(() => {
           cache.delete(url);
           return null;
         });

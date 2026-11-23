@@ -12,6 +12,7 @@ export interface RemoteStorage {
   upload(path: string, data: Uint8Array<ArrayBuffer>): Promise<string>;
   createDirectory(path: string): Promise<void>;
   remove(path: string): Promise<void>;
+  move(from: string, to: string): Promise<void>;
 }
 
 export function encodePath(path: string): string {

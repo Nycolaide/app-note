@@ -7,13 +7,16 @@ import {
   remove,
   rename,
   stat,
+  watch,
   writeFile,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
+import { appDataDir, join } from "@tauri-apps/api/path";
 import { baseName, joinPath, parentPath } from "../path";
 import type { StorageEntry, StorageProvider, StorageStat } from "./provider";
 
 const baseDir = BaseDirectory.AppData;
+const WATCH_DELAY_MS = 500;
 
 export class LocalStorageProvider implements StorageProvider {
   readonly #root: string;
@@ -69,6 +72,23 @@ export class LocalStorageProvider implements StorageProvider {
     return remove(this.#resolve(path), { baseDir, recursive: true });
   }
 
+  async watch(listener: (paths: string[]) => void): Promise<() => void> {
+    const root = toForwardSlashes(await join(await appDataDir(), ...this.#root.split("/")));
+
+    return watch(
+      this.#root,
+      (event) => {
+        const paths = event.paths
+          .map(toForwardSlashes)
+          .filter((path) => path.startsWith(`${root}/`))
+          .map((path) => path.slice(root.length + 1));
+
+        if (paths.length > 0) listener(paths);
+      },
+      { baseDir, recursive: true, delayMs: WATCH_DELAY_MS },
+    );
+  }
+
   async #writeAtomically(path: string, write: (temporary: string) => Promise<void>): Promise<void> {
     const target = this.#resolve(path);
     const temporary = joinPath(parentPath(target), `.${baseName(target)}.tmp`);
@@ -80,4 +100,8 @@ export class LocalStorageProvider implements StorageProvider {
   #resolve(path: string): string {
     return joinPath(this.#root, path);
   }
+}
+
+function toForwardSlashes(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "");
 }

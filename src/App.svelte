@@ -6,15 +6,18 @@
   import { createLinkPreviewCard } from "$lib/ui/link-preview-card";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import VaultPanel from "$lib/ui/VaultPanel.svelte";
+  import VaultTransfer from "$lib/ui/VaultTransfer.svelte";
   import {
+    createLinkPreviewFileStore,
     createLinkPreviews,
+    isSameOrInside,
+    moveToVault,
     parentPath,
     SyncScheduler,
     VaultRegistry,
     type ConnectRequest,
     type FolderNode,
     type NoteMeta,
-    type SyncReport,
     type SyncStatus,
     type Vault,
     type VaultDescriptor,
@@ -23,7 +26,7 @@
 
   const SAVE_DELAY_MS = 500;
   const LAST_VAULT_KEY = "app-note:last-vault";
-  const linkPreviews = createLinkPreviews();
+  const linkPreviews = createLinkPreviews({ store: createLinkPreviewFileStore() });
   const registry = new VaultRegistry();
 
   let vaults = $state.raw<VaultDescriptor[]>([]);
@@ -33,6 +36,7 @@
   let attachments: AttachmentUrls | undefined;
   let scheduler: SyncScheduler | undefined;
   let unsubscribe: (() => void) | undefined;
+  let stopWatching: (() => void) | undefined;
   let editorGeneration = $state(0);
   let version = $state(0);
   let error = $state("");
@@ -54,6 +58,7 @@
   let draftTags = $state("");
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
+  const otherVaults = $derived(vaults.filter((descriptor) => descriptor.id !== session?.descriptor.id));
   const tree = $derived(track((v) => v.tree(), undefined));
   const folders = $derived(track((v) => v.folders(), []));
   const tags = $derived(track((v) => v.tags(), []));
@@ -93,6 +98,11 @@
     attachments = createAttachmentUrls(opened.vault);
     unsubscribe = opened.vault.onChange(() => version++);
     writeLastVaultId(descriptor.id);
+    attempt(() => opened.vault.cleanUp());
+    opened.vault
+      .watchExternalChanges(reloadOpenNote)
+      .then((stop) => (session === opened ? (stopWatching = stop) : stop()))
+      .catch(() => undefined);
 
     if (opened.sync) {
       scheduler = new SyncScheduler({
@@ -100,7 +110,9 @@
         sync: opened.sync,
         beforeSync: flushSave,
         onStatus: (status) => (syncStatus = status),
-        onSynced: refreshOpenNote,
+        onSynced: (report) => {
+          if (report.downloaded + report.deletedLocally + report.movedLocally > 0) reloadOpenNote();
+        },
       });
       scheduler.start();
     }
@@ -108,6 +120,8 @@
 
   function closeSession(): void {
     scheduler?.stop();
+    stopWatching?.();
+    stopWatching = undefined;
     unsubscribe?.();
     attachments?.dispose();
     scheduler = undefined;
@@ -127,8 +141,8 @@
     showTrash = false;
   }
 
-  function refreshOpenNote(report: SyncReport): void {
-    if (!selectedNotePath || report.downloaded + report.deletedLocally === 0) return;
+  function reloadOpenNote(): void {
+    if (!selectedNotePath) return;
     const fresh = vault?.getNote(selectedNotePath);
 
     if (!fresh) {
@@ -302,6 +316,29 @@
     });
   }
 
+  async function moveNoteToVault(target: Vault, folder: string): Promise<void> {
+    if (!note || !vault) return;
+    const source = vault;
+    const path = note.path;
+    await attempt(async () => {
+      await flushSave();
+      await moveToVault(source, path, target, folder);
+      selectedNotePath = null;
+    });
+  }
+
+  async function moveFolderToVault(target: Vault, folder: string): Promise<void> {
+    if (!vault) return;
+    const source = vault;
+    const path = selectedFolder;
+    await attempt(async () => {
+      await flushSave();
+      await moveToVault(source, path, target, folder);
+      if (selectedNotePath && isSameOrInside(selectedNotePath, path)) selectedNotePath = null;
+      selectFolder("");
+    });
+  }
+
   function trashNote(): void {
     if (!note) return;
     const path = note.path;
@@ -360,6 +397,7 @@
           <button onclick={moveFolder}>Déplacer</button>
           <br />
           <button onclick={trashFolder}>Mettre à la corbeille (avec son contenu)</button>
+          <VaultTransfer {registry} vaults={otherVaults} onmove={moveFolderToVault} onerror={(message) => (error = message)} />
         </fieldset>
       {/if}
 
@@ -445,6 +483,7 @@
         </select>
         <button onclick={moveNote}>Déplacer</button>
         <button onclick={trashNote}>Mettre à la corbeille</button>
+        <VaultTransfer {registry} vaults={otherVaults} onmove={moveNoteToVault} onerror={(message) => (error = message)} />
       {:else}
         <p>Aucune note sélectionnée</p>
       {/if}

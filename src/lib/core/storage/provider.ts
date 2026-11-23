@@ -20,4 +20,5 @@ export interface StorageProvider {
   createDirectory(path: string): Promise<void>;
   move(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;
+  watch?(listener: (paths: string[]) => void): Promise<() => void>;
 }

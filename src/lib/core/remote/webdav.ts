@@ -71,6 +71,10 @@ export class WebDavStorage implements RemoteStorage {
     await this.#request("DELETE", path, {}, { allowed: [NOT_FOUND] });
   }
 
+  async move(from: string, to: string): Promise<void> {
+    await this.#request("MOVE", from, { headers: { Destination: this.#url(to), Overwrite: "F" } });
+  }
+
   async #propfind(path: string, depth: "0" | "1"): Promise<RemoteEntry[]> {
     const response = await this.#request(
       "PROPFIND",
@@ -118,17 +122,19 @@ export class WebDavStorage implements RemoteStorage {
     init: RequestInit = {},
     options: { directory?: boolean; allowed?: number[] } = {},
   ): Promise<Response> {
-    const encoded = encodePath(path);
-    const suffix = options.directory && encoded ? "/" : "";
-    const url = new URL(`${encoded}${suffix}`, this.#base).href;
-
-    const response = await this.#fetch(url, {
+    const response = await this.#fetch(this.#url(path, options.directory), {
       ...init,
       method,
       headers: { ...init.headers, Authorization: this.#authorization },
     });
 
     return expectOk(response, `WebDAV ${method} ${path || "/"}`, options.allowed);
+  }
+
+  #url(path: string, directory = false): string {
+    const encoded = encodePath(path);
+    const suffix = directory && encoded ? "/" : "";
+    return new URL(`${encoded}${suffix}`, this.#base).href;
   }
 }
 
