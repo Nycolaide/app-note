@@ -1,4 +1,4 @@
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { defaultFetcher, type Fetcher } from "./http";
 
 export interface LinkPreview {
   url: string;
@@ -8,7 +8,6 @@ export interface LinkPreview {
   siteName: string;
 }
 
-export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 
 export interface LinkPreviews {
   get(url: string): Promise<LinkPreview | null>;
@@ -29,7 +28,7 @@ export function isWebUrl(url: string): boolean {
   return WEB_URL.test(url);
 }
 
-export function createLinkPreviews(fetcher: Fetcher = tauriFetch): LinkPreviews {
+export function createLinkPreviews(fetcher: Fetcher = defaultFetcher): LinkPreviews {
   const cache = new Map<string, Promise<LinkPreview | null>>();
 
   async function load(url: string): Promise<LinkPreview | null> {

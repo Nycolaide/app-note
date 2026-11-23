@@ -6,11 +6,12 @@ import {
   readTextFile,
   remove,
   rename,
+  stat,
   writeFile,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
 import { baseName, joinPath, parentPath } from "../path";
-import type { StorageEntry, StorageProvider } from "./provider";
+import type { StorageEntry, StorageProvider, StorageStat } from "./provider";
 
 const baseDir = BaseDirectory.AppData;
 
@@ -30,6 +31,11 @@ export class LocalStorageProvider implements StorageProvider {
         name: entry.name,
         kind: entry.isDirectory ? "directory" : "file",
       }));
+  }
+
+  async stat(path: string): Promise<StorageStat> {
+    const info = await stat(this.#resolve(path), { baseDir });
+    return { size: info.size, modified: info.mtime?.getTime() ?? 0 };
   }
 
   readText(path: string): Promise<string> {

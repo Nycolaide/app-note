@@ -52,7 +52,9 @@ interface TrashMetadata {
   deletedAt: string;
 }
 
-type Listener = () => void;
+export type ChangeOrigin = "local" | "sync";
+
+type Listener = (origin: ChangeOrigin) => void;
 
 const ROOT = "";
 const TRASH = ".trash";
@@ -78,16 +80,15 @@ export class Vault {
   }
 
   load(): Promise<void> {
+    return this.#run(() => this.#reload());
+  }
+
+  synchronize<T>(task: () => Promise<T>, needsReload: (result: T) => boolean): Promise<T> {
     return this.#run(async () => {
-      this.#folders.clear();
-      this.#notes.clear();
-      this.#trash.clear();
-      await this.#storage.createDirectory(ROOT);
-      await this.#storage.createDirectory(TRASH);
-      await this.#storage.createDirectory(ATTACHMENTS);
-      await this.#scan(ROOT);
-      await this.#scanTrash();
-    });
+      const result = await task();
+      if (needsReload(result)) await this.#reload();
+      return result;
+    }, "sync");
   }
 
   trash(): TrashEntry[] {
@@ -316,6 +317,17 @@ export class Vault {
     });
   }
 
+  async #reload(): Promise<void> {
+    this.#folders.clear();
+    this.#notes.clear();
+    this.#trash.clear();
+    await this.#storage.createDirectory(ROOT);
+    await this.#storage.createDirectory(TRASH);
+    await this.#storage.createDirectory(ATTACHMENTS);
+    await this.#scan(ROOT);
+    await this.#scanTrash();
+  }
+
   async #scan(folder: string): Promise<void> {
     this.#folders.add(folder);
     const entries = await this.#storage.list(folder);
@@ -532,14 +544,14 @@ export class Vault {
       .map(toMeta);
   }
 
-  #run<T>(task: () => Promise<T> | T): Promise<T> {
+  #run<T>(task: () => Promise<T> | T, origin: ChangeOrigin = "local"): Promise<T> {
     const result = this.#queue.then(task);
     this.#queue = result.catch(() => undefined);
-    return result.finally(() => this.#emit());
+    return result.finally(() => this.#emit(origin));
   }
 
-  #emit(): void {
-    for (const listener of this.#listeners) listener();
+  #emit(origin: ChangeOrigin): void {
+    for (const listener of this.#listeners) listener(origin);
   }
 }
 

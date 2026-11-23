@@ -5,13 +5,35 @@
   import { createAttachmentUrls, type AttachmentUrls } from "$lib/ui/attachment-urls";
   import { createLinkPreviewCard } from "$lib/ui/link-preview-card";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { createLinkPreviews, openLocalVault, parentPath, type FolderNode, type NoteMeta, type Vault } from "$lib/core";
+  import VaultPanel from "$lib/ui/VaultPanel.svelte";
+  import {
+    createLinkPreviews,
+    parentPath,
+    SyncScheduler,
+    VaultRegistry,
+    type ConnectRequest,
+    type FolderNode,
+    type NoteMeta,
+    type SyncReport,
+    type SyncStatus,
+    type Vault,
+    type VaultDescriptor,
+    type VaultSession,
+  } from "$lib/core";
 
   const SAVE_DELAY_MS = 500;
+  const LAST_VAULT_KEY = "app-note:last-vault";
   const linkPreviews = createLinkPreviews();
+  const registry = new VaultRegistry();
 
+  let vaults = $state.raw<VaultDescriptor[]>([]);
+  let session = $state.raw<VaultSession | null>(null);
+  let syncStatus = $state.raw<SyncStatus | null>(null);
   let vault = $state.raw<Vault | null>(null);
   let attachments: AttachmentUrls | undefined;
+  let scheduler: SyncScheduler | undefined;
+  let unsubscribe: (() => void) | undefined;
+  let editorGeneration = $state(0);
   let version = $state(0);
   let error = $state("");
 
@@ -51,20 +73,103 @@
   );
 
   onMount(() => {
-    let unsubscribe: (() => void) | undefined;
-
     attempt(async () => {
-      const opened = await openLocalVault();
-      unsubscribe = opened.onChange(() => version++);
-      attachments = createAttachmentUrls(opened);
-      vault = opened;
+      vaults = await registry.list();
+      const lastId = readLastVaultId();
+      await openSession(vaults.find((descriptor) => descriptor.id === lastId) ?? vaults[0]);
     });
 
-    return () => {
-      unsubscribe?.();
-      attachments?.dispose();
-    };
+    return closeSession;
   });
+
+  async function openSession(descriptor: VaultDescriptor): Promise<void> {
+    await flushSave();
+    closeSession();
+    resetSelection();
+
+    const opened = await registry.open(descriptor);
+    session = opened;
+    vault = opened.vault;
+    attachments = createAttachmentUrls(opened.vault);
+    unsubscribe = opened.vault.onChange(() => version++);
+    writeLastVaultId(descriptor.id);
+
+    if (opened.sync) {
+      scheduler = new SyncScheduler({
+        vault: opened.vault,
+        sync: opened.sync,
+        beforeSync: flushSave,
+        onStatus: (status) => (syncStatus = status),
+        onSynced: refreshOpenNote,
+      });
+      scheduler.start();
+    }
+  }
+
+  function closeSession(): void {
+    scheduler?.stop();
+    unsubscribe?.();
+    attachments?.dispose();
+    scheduler = undefined;
+    unsubscribe = undefined;
+    attachments = undefined;
+    syncStatus = null;
+    session = null;
+    vault = null;
+  }
+
+  function resetSelection(): void {
+    clearTimeout(saveTimer);
+    selectedFolder = "";
+    selectedNotePath = null;
+    activeTag = null;
+    query = "";
+    showTrash = false;
+  }
+
+  function refreshOpenNote(report: SyncReport): void {
+    if (!selectedNotePath || report.downloaded + report.deletedLocally === 0) return;
+    const fresh = vault?.getNote(selectedNotePath);
+
+    if (!fresh) {
+      selectedNotePath = null;
+    } else if (fresh.content !== draftContent || fresh.tags.join(", ") !== draftTags) {
+      openNote(fresh.path);
+      editorGeneration++;
+    }
+  }
+
+  async function connectVault(request: ConnectRequest): Promise<void> {
+    await attempt(async () => {
+      const descriptor = await registry.connect(request);
+      vaults = await registry.list();
+      await openSession(descriptor);
+    });
+  }
+
+  async function removeVault(descriptor: VaultDescriptor): Promise<void> {
+    await attempt(async () => {
+      await openSession(vaults[0]);
+      await registry.remove(descriptor.id);
+      vaults = await registry.list();
+    });
+  }
+
+  function readLastVaultId(): string | null {
+    try {
+      return localStorage.getItem(LAST_VAULT_KEY);
+    } catch {
+      return null;
+    }
+  }
+
+  function writeLastVaultId(id: string): void {
+    try {
+      localStorage.setItem(LAST_VAULT_KEY, id);
+    } catch {
+      return;
+    }
+  }
 
   function track<T>(read: (vault: Vault) => T, fallback: T): T {
     version;
@@ -210,6 +315,16 @@
 
 <TitleBar />
 
+<VaultPanel
+  {vaults}
+  current={session?.descriptor ?? null}
+  {syncStatus}
+  onswitch={(descriptor) => attempt(() => openSession(descriptor))}
+  onsync={() => scheduler?.syncNow()}
+  onremove={removeVault}
+  onconnect={connectVault}
+/>
+
 {#if error}
   <p role="alert">Erreur : {error} <button onclick={() => (error = "")}>OK</button></p>
 {/if}
@@ -314,7 +429,7 @@
           Tags (séparés par des virgules)
           <input bind:value={draftTags} oninput={scheduleSave} onchange={flushSave} />
         </label>
-        {#key note.path}
+        {#key `${note.path}#${editorGeneration}`}
           <MarkdownEditor
             value={note.content}
             onchange={updateContent}

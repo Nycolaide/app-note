@@ -5,8 +5,14 @@ export interface StorageEntry {
   kind: EntryKind;
 }
 
+export interface StorageStat {
+  size: number;
+  modified: number;
+}
+
 export interface StorageProvider {
   list(path: string): Promise<StorageEntry[]>;
+  stat(path: string): Promise<StorageStat>;
   readText(path: string): Promise<string>;
   writeText(path: string, content: string): Promise<void>;
   readBinary(path: string): Promise<Uint8Array<ArrayBuffer>>;
