@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import TitleBar from "$lib/ui/TitleBar.svelte";
+  import MarkdownEditor from "$lib/ui/MarkdownEditor.svelte";
   import { openLocalVault, parentPath, type FolderNode, type NoteMeta, type Vault } from "$lib/core";
 
   const SAVE_DELAY_MS = 500;
@@ -105,6 +106,11 @@
     draftContent = opened.content;
     draftTags = opened.tags.join(", ");
     noteTarget = "";
+  }
+
+  function updateContent(markdown: string): void {
+    draftContent = markdown;
+    scheduleSave();
   }
 
   function scheduleSave(): void {
@@ -299,7 +305,9 @@
           Tags (séparés par des virgules)
           <input bind:value={draftTags} oninput={scheduleSave} onchange={flushSave} />
         </label>
-        <textarea bind:value={draftContent} oninput={scheduleSave} rows="20"></textarea>
+        {#key note.path}
+          <MarkdownEditor value={note.content} onchange={updateContent} />
+        {/key}
         <select bind:value={noteTarget}>
           {#each folders as path (path)}
             <option value={path}>{label(path)}</option>
@@ -335,10 +343,5 @@
     display: grid;
     grid-template-columns: 1fr 1fr 2fr;
     gap: 1rem;
-  }
-
-  textarea {
-    display: block;
-    width: 100%;
   }
 </style>
