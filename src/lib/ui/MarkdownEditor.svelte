@@ -1,44 +1,58 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Editor, defaultValueCtx, remarkStringifyOptionsCtx, rootCtx } from "@milkdown/kit/core";
-  import { commonmark } from "@milkdown/kit/preset/commonmark";
-  import { gfm } from "@milkdown/kit/preset/gfm";
-  import { history } from "@milkdown/kit/plugin/history";
-  import { clipboard } from "@milkdown/kit/plugin/clipboard";
-  import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
+  import { createMarkdownEditor, type MarkdownEditor } from "./markdown-editor";
+  import type { LinkPreviewRenderer } from "./link-preview-plugin";
 
   interface Props {
     value: string;
     onchange: (markdown: string) => void;
+    resolveImage: (source: string) => Promise<string>;
+    saveImage: (data: Uint8Array, fileName: string) => Promise<string>;
+    renderLinkPreview: LinkPreviewRenderer;
   }
 
-  let { value, onchange }: Props = $props();
+  let { value, onchange, resolveImage, saveImage, renderLinkPreview }: Props = $props();
   let root: HTMLDivElement;
+  let fileInput: HTMLInputElement;
+  let editor: MarkdownEditor | undefined;
+
+  async function storeImage(file: File): Promise<string> {
+    return saveImage(new Uint8Array(await file.arrayBuffer()), file.name);
+  }
+
+  async function insertPickedImages(): Promise<void> {
+    const files = Array.from(fileInput.files ?? []);
+    fileInput.value = "";
+
+    for (const file of files) {
+      editor?.insertImage(await storeImage(file), file.name);
+    }
+  }
 
   onMount(() => {
-    const initialValue = value;
+    const created = createMarkdownEditor({
+      root,
+      value,
+      onChange: (markdown) => onchange(markdown),
+      resolveImage: (source) => resolveImage(source),
+      saveImage: storeImage,
+      renderLinkPreview: (url) => renderLinkPreview(url),
+    });
 
-    const created = Editor.make()
-      .config((ctx) => {
-        ctx.set(rootCtx, root);
-        ctx.set(defaultValueCtx, initialValue);
-        ctx.update(remarkStringifyOptionsCtx, (options) => ({ ...options, bullet: "-" as const, rule: "-" as const }));
-        ctx.get(listenerCtx).markdownUpdated((_, markdown, previous) => {
-          if (markdown !== previous) onchange(markdown);
-        });
-      })
-      .use(commonmark)
-      .use(gfm)
-      .use(history)
-      .use(clipboard)
-      .use(listener)
-      .create();
+    created.then((instance) => (editor = instance));
 
     return () => {
-      created.then((editor) => editor.destroy());
+      editor = undefined;
+      created.then((instance) => instance.destroy());
     };
   });
 </script>
+
+<div>
+  <button type="button" onclick={() => editor?.insertTable()}>Tableau</button>
+  <button type="button" onclick={() => fileInput.click()}>Image</button>
+  <input bind:this={fileInput} type="file" accept="image/*" multiple hidden onchange={insertPickedImages} />
+</div>
 
 <div class="markdown-editor" bind:this={root}></div>
 
@@ -46,6 +60,23 @@
   .markdown-editor :global(.ProseMirror) {
     min-height: 20rem;
     outline: none;
+  }
+
+  .markdown-editor :global(img) {
+    max-width: 100%;
+  }
+
+  .markdown-editor :global(.link-preview) {
+    display: block;
+    max-width: 30rem;
+    border: 1px solid currentColor;
+    padding: 0.5rem;
+    cursor: pointer;
+  }
+
+  .markdown-editor :global(.link-preview img) {
+    display: block;
+    max-height: 10rem;
   }
 
   .markdown-editor :global(table) {

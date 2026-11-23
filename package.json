@@ -15,6 +15,7 @@
     "@milkdown/kit": "^7.23.0",
     "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-fs": "~2",
+    "@tauri-apps/plugin-http": "~2",
     "@tauri-apps/plugin-opener": "^2.7.3"
   },
   "devDependencies": {

@@ -9,6 +9,8 @@ export interface StorageProvider {
   list(path: string): Promise<StorageEntry[]>;
   readText(path: string): Promise<string>;
   writeText(path: string, content: string): Promise<void>;
+  readBinary(path: string): Promise<Uint8Array<ArrayBuffer>>;
+  writeBinary(path: string, data: Uint8Array): Promise<void>;
   createDirectory(path: string): Promise<void>;
   move(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;

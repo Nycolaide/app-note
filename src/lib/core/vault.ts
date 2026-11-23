@@ -56,6 +56,7 @@ type Listener = () => void;
 
 const ROOT = "";
 const TRASH = ".trash";
+const ATTACHMENTS = "attachments";
 const TRASH_METADATA = ".entry.json";
 const DEFAULT_NOTE_TITLE = "Sans titre";
 
@@ -83,6 +84,7 @@ export class Vault {
       this.#trash.clear();
       await this.#storage.createDirectory(ROOT);
       await this.#storage.createDirectory(TRASH);
+      await this.#storage.createDirectory(ATTACHMENTS);
       await this.#scan(ROOT);
       await this.#scanTrash();
     });
@@ -184,6 +186,33 @@ export class Vault {
 
   getNote(path: string): Note | undefined {
     return this.#notes.get(path);
+  }
+
+  isAttachment(path: string): boolean {
+    const [folder, name, ...rest] = path.split("/");
+
+    return (
+      folder === ATTACHMENTS &&
+      rest.length === 0 &&
+      name !== undefined &&
+      name.length > 0 &&
+      !name.startsWith(".") &&
+      !name.includes("\\")
+    );
+  }
+
+  async saveAttachment(data: Uint8Array, fileName: string): Promise<string> {
+    const path = joinPath(ATTACHMENTS, `${crypto.randomUUID()}${attachmentExtension(fileName)}`);
+    await this.#storage.writeBinary(path, data);
+    return path;
+  }
+
+  readAttachment(path: string): Promise<Uint8Array<ArrayBuffer>> {
+    if (!this.isAttachment(path)) {
+      return Promise.reject(new Error(`Pièce jointe invalide : ${path}`));
+    }
+
+    return this.#storage.readBinary(path);
   }
 
   createFolder(parent: string, name: string): Promise<string> {
@@ -296,6 +325,10 @@ export class Vault {
         .filter((entry) => !entry.name.startsWith("."))
         .map(async (entry) => {
           const path = joinPath(folder, entry.name);
+
+          if (path === ATTACHMENTS) {
+            return;
+          }
 
           if (entry.kind === "directory") {
             await this.#scan(path);
@@ -451,7 +484,11 @@ export class Vault {
     const matches = (candidate: string) =>
       samePath(candidate, path) && (ignored === undefined || !samePath(candidate, ignored));
 
-    return [...this.#folders].some(matches) || [...this.#notes.keys()].some(matches);
+    return (
+      samePath(path, ATTACHMENTS) ||
+      [...this.#folders].some(matches) ||
+      [...this.#notes.keys()].some(matches)
+    );
   }
 
   #assertAvailable(path: string, ignored?: string): void {
@@ -504,6 +541,11 @@ export class Vault {
   #emit(): void {
     for (const listener of this.#listeners) listener();
   }
+}
+
+function attachmentExtension(fileName: string): string {
+  const match = fileName.toLowerCase().match(/\.([a-z0-9]{1,10})$/);
+  return match ? `.${match[1]}` : "";
 }
 
 function toTrashEntry(id: string, kind: TrashKind, metadata: TrashMetadata): TrashEntry {

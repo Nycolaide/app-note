@@ -2,11 +2,16 @@
   import { onMount } from "svelte";
   import TitleBar from "$lib/ui/TitleBar.svelte";
   import MarkdownEditor from "$lib/ui/MarkdownEditor.svelte";
-  import { openLocalVault, parentPath, type FolderNode, type NoteMeta, type Vault } from "$lib/core";
+  import { createAttachmentUrls, type AttachmentUrls } from "$lib/ui/attachment-urls";
+  import { createLinkPreviewCard } from "$lib/ui/link-preview-card";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { createLinkPreviews, openLocalVault, parentPath, type FolderNode, type NoteMeta, type Vault } from "$lib/core";
 
   const SAVE_DELAY_MS = 500;
+  const linkPreviews = createLinkPreviews();
 
   let vault = $state.raw<Vault | null>(null);
+  let attachments: AttachmentUrls | undefined;
   let version = $state(0);
   let error = $state("");
 
@@ -51,10 +56,14 @@
     attempt(async () => {
       const opened = await openLocalVault();
       unsubscribe = opened.onChange(() => version++);
+      attachments = createAttachmentUrls(opened);
       vault = opened;
     });
 
-    return () => unsubscribe?.();
+    return () => {
+      unsubscribe?.();
+      attachments?.dispose();
+    };
   });
 
   function track<T>(read: (vault: Vault) => T, fallback: T): T {
@@ -306,7 +315,13 @@
           <input bind:value={draftTags} oninput={scheduleSave} onchange={flushSave} />
         </label>
         {#key note.path}
-          <MarkdownEditor value={note.content} onchange={updateContent} />
+          <MarkdownEditor
+            value={note.content}
+            onchange={updateContent}
+            resolveImage={(source) => attachments?.resolve(source) ?? Promise.resolve("")}
+            saveImage={(data, fileName) => vault!.saveAttachment(data, fileName)}
+            renderLinkPreview={(url) => createLinkPreviewCard(url, linkPreviews.get, openUrl)}
+          />
         {/key}
         <select bind:value={noteTarget}>
           {#each folders as path (path)}

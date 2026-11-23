@@ -2,9 +2,11 @@ import {
   BaseDirectory,
   mkdir,
   readDir,
+  readFile,
   readTextFile,
   remove,
   rename,
+  writeFile,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
 import { baseName, joinPath, parentPath } from "../path";
@@ -34,12 +36,16 @@ export class LocalStorageProvider implements StorageProvider {
     return readTextFile(this.#resolve(path), { baseDir });
   }
 
-  async writeText(path: string, content: string): Promise<void> {
-    const target = this.#resolve(path);
-    const temporary = joinPath(parentPath(target), `.${baseName(target)}.tmp`);
+  writeText(path: string, content: string): Promise<void> {
+    return this.#writeAtomically(path, (temporary) => writeTextFile(temporary, content, { baseDir }));
+  }
 
-    await writeTextFile(temporary, content, { baseDir });
-    await rename(temporary, target, { oldPathBaseDir: baseDir, newPathBaseDir: baseDir });
+  readBinary(path: string): Promise<Uint8Array<ArrayBuffer>> {
+    return readFile(this.#resolve(path), { baseDir });
+  }
+
+  writeBinary(path: string, data: Uint8Array): Promise<void> {
+    return this.#writeAtomically(path, (temporary) => writeFile(temporary, data, { baseDir }));
   }
 
   createDirectory(path: string): Promise<void> {
@@ -55,6 +61,14 @@ export class LocalStorageProvider implements StorageProvider {
 
   remove(path: string): Promise<void> {
     return remove(this.#resolve(path), { baseDir, recursive: true });
+  }
+
+  async #writeAtomically(path: string, write: (temporary: string) => Promise<void>): Promise<void> {
+    const target = this.#resolve(path);
+    const temporary = joinPath(parentPath(target), `.${baseName(target)}.tmp`);
+
+    await write(temporary);
+    await rename(temporary, target, { oldPathBaseDir: baseDir, newPathBaseDir: baseDir });
   }
 
   #resolve(path: string): string {

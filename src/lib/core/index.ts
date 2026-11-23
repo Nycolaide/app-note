@@ -6,6 +6,7 @@ export type { StorageEntry, StorageProvider } from "./storage/provider";
 export type { FolderNode, NoteChanges, TagCount, TrashEntry, TrashKind } from "./vault";
 export { Vault };
 export { parentPath } from "./path";
+export { createLinkPreviews, type LinkPreview, type LinkPreviews } from "./link-preview";
 
 const LOCAL_NOTES_DIRECTORY = "notes";
 
