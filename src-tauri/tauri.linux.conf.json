@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "title": "Runote",
+        "width": 1100,
+        "height": 720,
+        "decorations": false,
+        "dragDropEnabled": false,
+        "minWidth": 360,
+        "minHeight": 480,
+        "transparent": true
+      }
+    ]
+  }
+}
