@@ -1,13 +1,14 @@
+import { GoogleAuth, type GoogleClient } from "./remote/google-auth";
+import { GoogleDriveClient, GoogleDriveStorage, type DriveFolder } from "./remote/google-drive";
+import type { RemoteStorage } from "./remote/remote";
 import { WebDavStorage, type WebDavCredentials } from "./remote/webdav";
 import { LocalStorageProvider } from "./storage/local";
 import { SyncEngine, type SyncReport } from "./sync/sync-engine";
 import { Vault } from "./vault";
 
-export interface RemoteConfig {
-  kind: "webdav";
-  url: string;
-  username: string;
-}
+export type RemoteConfig =
+  | { kind: "webdav"; url: string; username: string }
+  | { kind: "google-drive"; folderId: string; account: string };
 
 export interface VaultDescriptor {
   id: string;
@@ -19,6 +20,18 @@ export interface ConnectRequest extends WebDavCredentials {
   name: string;
 }
 
+export interface GoogleDriveConnection {
+  refreshToken: string;
+  account: string;
+  folders: DriveFolder[];
+}
+
+export interface GoogleDriveConnectRequest {
+  refreshToken: string;
+  account: string;
+  folder: DriveFolder | { name: string };
+}
+
 export interface VaultSession {
   descriptor: VaultDescriptor;
   vault: Vault;
@@ -26,7 +39,12 @@ export interface VaultSession {
 }
 
 interface Secret {
-  password: string;
+  password?: string;
+  refreshToken?: string;
+}
+
+export interface VaultRegistryOptions {
+  google: GoogleClient | null;
 }
 
 const CONFIG_DIRECTORY = "config";
@@ -39,6 +57,15 @@ const LOCAL_VAULT: VaultDescriptor = { id: "local", name: "Local", remote: null 
 export class VaultRegistry {
   readonly #config = new LocalStorageProvider(CONFIG_DIRECTORY);
   readonly #mirrors = new LocalStorageProvider(MIRRORS_DIRECTORY);
+  readonly #google: GoogleClient | null;
+
+  constructor(options: VaultRegistryOptions = { google: null }) {
+    this.#google = options.google;
+  }
+
+  get googleDriveAvailable(): boolean {
+    return this.#google !== null;
+  }
 
   async list(): Promise<VaultDescriptor[]> {
     return [LOCAL_VAULT, ...(await this.#remoteVaults())];
@@ -53,8 +80,7 @@ export class VaultRegistry {
       return { descriptor, vault, sync: null };
     }
 
-    const { password } = (await this.#secrets())[descriptor.id] ?? { password: "" };
-    const remote = new WebDavStorage({ url: descriptor.remote.url, username: descriptor.remote.username, password });
+    const remote = this.#remoteStorage(descriptor.remote, (await this.#secrets())[descriptor.id] ?? {});
     const engine = new SyncEngine(storage, remote);
     const sync = () => vault.synchronize(() => engine.run(), changedLocally);
     return { descriptor, vault, sync };
@@ -63,15 +89,40 @@ export class VaultRegistry {
   async connect({ name, url, username, password }: ConnectRequest): Promise<VaultDescriptor> {
     await new WebDavStorage({ url, username, password }).listAll();
 
-    const descriptor: VaultDescriptor = {
-      id: crypto.randomUUID(),
-      name: name.trim() || "Sans nom",
-      remote: { kind: "webdav", url, username },
-    };
+    return this.#save({ id: crypto.randomUUID(), name: name.trim() || "Sans nom", remote: { kind: "webdav", url, username } }, { password });
+  }
 
-    await this.#write(SECRETS_FILE, { ...(await this.#secrets()), [descriptor.id]: { password } });
+  async inspectGoogleDrive(refreshToken: string): Promise<GoogleDriveConnection> {
+    const drive = this.#driveClient(refreshToken);
+    const [account, folders] = await Promise.all([drive.accountEmail(), drive.vaultFolders()]);
+    return { refreshToken, account, folders };
+  }
+
+  async connectGoogleDrive({ refreshToken, account, folder }: GoogleDriveConnectRequest): Promise<VaultDescriptor> {
+    const name = folder.name.trim() || "Sans nom";
+    const target = "id" in folder ? folder : await this.#driveClient(refreshToken).createVaultFolder(name);
+    const remote: RemoteConfig = { kind: "google-drive", folderId: target.id, account };
+    return this.#save({ id: crypto.randomUUID(), name: target.name, remote }, { refreshToken });
+  }
+
+  async #save(descriptor: VaultDescriptor, secret: Secret): Promise<VaultDescriptor> {
+    await this.#write(SECRETS_FILE, { ...(await this.#secrets()), [descriptor.id]: secret });
     await this.#write(VAULTS_FILE, [...(await this.#remoteVaults()), descriptor]);
     return descriptor;
+  }
+
+  #remoteStorage(config: RemoteConfig, secret: Secret): RemoteStorage {
+    if (config.kind === "google-drive") {
+      return new GoogleDriveStorage(this.#driveClient(secret.refreshToken ?? ""), config.folderId);
+    }
+    return new WebDavStorage({ url: config.url, username: config.username, password: secret.password ?? "" });
+  }
+
+  #driveClient(refreshToken: string): GoogleDriveClient {
+    if (!this.#google) {
+      throw new Error("Google Drive n'est pas configuré dans cette version de Runote.");
+    }
+    return new GoogleDriveClient(new GoogleAuth(this.#google, refreshToken));
   }
 
   async remove(id: string): Promise<void> {

@@ -333,6 +333,7 @@ export class Vault {
         path,
         title: titleFromPath(path),
         tags: [],
+        pinned: false,
         created: now,
         updated: now,
         content: "",
@@ -356,6 +357,16 @@ export class Vault {
 
       const note: Note = { ...current, content, tags, updated: new Date().toISOString() };
 
+      await this.#write(note);
+      return note;
+    });
+  }
+
+  setPinned(path: string, pinned: boolean): Promise<Note> {
+    return this.#run(async () => {
+      const current = this.#requireNote(path);
+      if (current.pinned === pinned) return current;
+      const note: Note = { ...current, pinned };
       await this.#write(note);
       return note;
     });

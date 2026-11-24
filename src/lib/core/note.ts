@@ -6,17 +6,19 @@ export interface NoteMeta {
   path: string;
   title: string;
   tags: string[];
+  pinned: boolean;
   created: string;
   updated: string;
+  excerpt: string;
 }
 
-export interface Note extends NoteMeta {
+export interface Note extends Omit<NoteMeta, "excerpt"> {
   content: string;
   properties: Frontmatter;
 }
 
 const NOTE_EXTENSION = ".md";
-const RESERVED_KEYS = ["id", "tags", "created", "updated"];
+const RESERVED_KEYS = ["id", "tags", "pinned", "created", "updated"];
 
 export function isNoteFile(name: string): boolean {
   return name.toLowerCase().endsWith(NOTE_EXTENSION);
@@ -57,6 +59,7 @@ export function parseNote(path: string, source: string): Note {
     path,
     title: titleFromPath(path),
     tags: normalizeTags(Array.isArray(tags) ? tags : tags ? [tags] : []),
+    pinned: frontmatter.pinned === "true",
     created: asString(frontmatter.created) ?? now,
     updated: asString(frontmatter.updated) ?? now,
     content: body,
@@ -71,6 +74,7 @@ export function serializeNote(note: Note): string {
     frontmatter: {
       id: note.id,
       tags: note.tags,
+      ...(note.pinned ? { pinned: "true" } : {}),
       created: note.created,
       updated: note.updated,
       ...note.properties,
@@ -79,8 +83,23 @@ export function serializeNote(note: Note): string {
   });
 }
 
-export function toMeta({ id, path, title, tags, created, updated }: Note): NoteMeta {
-  return { id, path, title, tags, created, updated };
+const EXCERPT_LENGTH = 160;
+
+export function toMeta({ id, path, title, tags, pinned, created, updated, content }: Note): NoteMeta {
+  return { id, path, title, tags, pinned, created, updated, excerpt: excerptOf(content) };
+}
+
+export function excerptOf(markdown: string): string {
+  return markdown
+    .replace(/<\/?[a-z][^>]*>/gi, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+(\[[ xX]\]\s+)?/gm, "")
+    .replace(/^\s*\|?[\s:|-]+\|?\s*$/gm, " ")
+    .replace(/[*_`~|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, EXCERPT_LENGTH);
 }
 
 function asString(value: unknown): string | undefined {

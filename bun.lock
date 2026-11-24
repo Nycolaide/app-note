@@ -3,8 +3,9 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "app-note",
+      "name": "runote",
       "dependencies": {
+        "@lucide/svelte": "^1.79.0",
         "@milkdown/kit": "^7.23.0",
         "@tauri-apps/api": "^2.12.5",
         "@tauri-apps/plugin-fs": "~2",
@@ -14,6 +15,7 @@
       "devDependencies": {
         "@sveltejs/vite-plugin-svelte": "^7.3.2",
         "@tauri-apps/cli": "^2.12.6",
+        "lapikit": "^0.8.5",
         "svelte": "^5.59.1",
         "svelte-check": "^4.7.8",
         "typescript": "~6.0.3",
@@ -65,6 +67,8 @@
     "@lezer/highlight": ["@lezer/highlight@1.2.5", "", { "dependencies": { "@lezer/common": "^1.3.0" } }, "sha512-O1GMVKgtf5YspFaRzpmqkVgMtIk2HG9uMAbH6wdAIdNh3TVzCsch/+cRi+6l2//UGDKe6NB9BW3cvuR5ezMQ0w=="],
 
     "@lezer/lr": ["@lezer/lr@1.4.12", "", { "dependencies": { "@lezer/common": "^1.0.0" } }, "sha512-On9HU4oMMiHPMkQDgoTnGahjgG5n/MkN38CgG77sMraKLL+3JBbeQNi1FcCXV9QRqwF9/BUXP3caHyJC1fBOTQ=="],
+
+    "@lucide/svelte": ["@lucide/svelte@1.79.0", "", { "peerDependencies": { "svelte": "^5" } }, "sha512-GT1yl6pbDLFYq/FBsVJX27HE3T+T/J35+OqZL+jimaj1oJfm9s63wCzVwPRbgWuhkS0vPMg76eEF4dMymZgbgA=="],
 
     "@marijn/find-cluster-break": ["@marijn/find-cluster-break@1.0.4", "", {}, "sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ=="],
 
@@ -281,6 +285,8 @@
     "is-plain-obj": ["is-plain-obj@4.1.0", "", {}, "sha512-+Pgi+vMuUNkJyExiMBt5IlFoMyKnr5zhJ4Uspz58WOhBF5QoIZkFyNHIbBAtHwzVAgk5RtndVNsDRN61/mmDqg=="],
 
     "is-reference": ["is-reference@3.0.3", "", { "dependencies": { "@types/estree": "^1.0.6" } }, "sha512-ixkJoqQvAP88E6wLydLGGqCJsrFUnqoH6HnaczB8XmDH1oaWU+xxdptvikTgaEhtZ53Ky6YXiBuUI2WXLMCwjw=="],
+
+    "lapikit": ["lapikit@0.8.5", "", { "dependencies": { "esm-env": "^1.2.2", "magic-string": "^0.30.21" }, "peerDependencies": { "svelte": "^5.20.0" }, "bin": { "lapikit": "bin/index.js" } }, "sha512-WV0EoMO/L8Y5TSoW62pP8NZGWcqFBFLLFaVtsMc51ufN5ft6CmG1K7uD632wdCYLD06UiT4Q2MiRpulW4F01RQ=="],
 
     "lightningcss": ["lightningcss@1.33.0", "", { "dependencies": { "detect-libc": "^2.0.3" }, "optionalDependencies": { "lightningcss-android-arm64": "1.33.0", "lightningcss-darwin-arm64": "1.33.0", "lightningcss-darwin-x64": "1.33.0", "lightningcss-freebsd-x64": "1.33.0", "lightningcss-linux-arm-gnueabihf": "1.33.0", "lightningcss-linux-arm64-gnu": "1.33.0", "lightningcss-linux-arm64-musl": "1.33.0", "lightningcss-linux-x64-gnu": "1.33.0", "lightningcss-linux-x64-musl": "1.33.0", "lightningcss-win32-arm64-msvc": "1.33.0", "lightningcss-win32-x64-msvc": "1.33.0" } }, "sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA=="],
 

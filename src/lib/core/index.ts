@@ -8,6 +8,8 @@ export { Vault } from "./vault";
 export {
   VaultRegistry,
   type ConnectRequest,
+  type GoogleDriveConnection,
+  type GoogleDriveConnectRequest,
   type RemoteConfig,
   type VaultDescriptor,
   type VaultSession,
@@ -20,3 +22,11 @@ export {
   type LinkPreview,
   type LinkPreviews,
 } from "./link-preview";
+export {
+  authorizationUrl,
+  createPkce,
+  exchangeCode,
+  randomState,
+  type GoogleClient,
+} from "./remote/google-auth";
+export type { DriveFolder } from "./remote/google-drive";

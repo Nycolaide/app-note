@@ -1,12 +1,13 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { lapikitPreprocess } from "lapikit/preprocess";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte({ preprocess: [lapikitPreprocess()] })],
   resolve: {
     alias: {
       $lib: fileURLToPath(new URL("./src/lib", import.meta.url)),

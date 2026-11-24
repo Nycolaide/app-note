@@ -1,5 +1,5 @@
 {
-  "name": "app-note",
+  "name": "runote",
   "version": "0.1.0",
   "description": "",
   "type": "module",
@@ -12,6 +12,7 @@
   },
   "license": "Apache-2.0",
   "dependencies": {
+    "@lucide/svelte": "^1.79.0",
     "@milkdown/kit": "^7.23.0",
     "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-fs": "~2",
@@ -21,6 +22,7 @@
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.2",
     "@tauri-apps/cli": "^2.12.6",
+    "lapikit": "^0.8.5",
     "svelte": "^5.59.1",
     "svelte-check": "^4.7.8",
     "typescript": "~6.0.3",

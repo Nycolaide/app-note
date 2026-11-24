@@ -1,6 +1,27 @@
-import { Editor, defaultValueCtx, remarkStringifyOptionsCtx, rootCtx } from "@milkdown/kit/core";
-import { commonmark, imageSchema, insertImageCommand } from "@milkdown/kit/preset/commonmark";
-import { gfm, insertTableCommand } from "@milkdown/kit/preset/gfm";
+import {
+  Editor,
+  defaultValueCtx,
+  editorViewCtx,
+  editorViewOptionsCtx,
+  remarkStringifyOptionsCtx,
+  rootCtx,
+} from "@milkdown/kit/core";
+import {
+  commonmark,
+  createCodeBlockCommand,
+  imageSchema,
+  insertHrCommand,
+  insertImageCommand,
+  toggleEmphasisCommand,
+  toggleInlineCodeCommand,
+  toggleStrongCommand,
+  turnIntoTextCommand,
+  wrapInBlockquoteCommand,
+  wrapInBulletListCommand,
+  wrapInHeadingCommand,
+  wrapInOrderedListCommand,
+} from "@milkdown/kit/preset/commonmark";
+import { gfm, insertTableCommand, toggleStrikethroughCommand } from "@milkdown/kit/preset/gfm";
 import { history } from "@milkdown/kit/plugin/history";
 import { clipboard } from "@milkdown/kit/plugin/clipboard";
 import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
@@ -9,6 +30,7 @@ import { $view, callCommand } from "@milkdown/kit/utils";
 import type { Node } from "@milkdown/kit/prose/model";
 import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
 import { linkPreviewPlugin, type LinkPreviewRenderer } from "./link-preview-plugin";
+import { continueTaskList, taskItemView, toggleTaskList } from "./task-list";
 
 export interface MarkdownEditorOptions {
   root: HTMLElement;
@@ -19,7 +41,24 @@ export interface MarkdownEditorOptions {
   renderLinkPreview: LinkPreviewRenderer;
 }
 
+export type FormatCommand =
+  | "bold"
+  | "italic"
+  | "strike"
+  | "code"
+  | "paragraph"
+  | "heading1"
+  | "heading2"
+  | "heading3"
+  | "bulletList"
+  | "orderedList"
+  | "taskList"
+  | "quote"
+  | "codeBlock"
+  | "rule";
+
 export interface MarkdownEditor {
+  format(command: FormatCommand): void;
   insertTable(): void;
   insertImage(source: string, alt: string): void;
   destroy(): Promise<void>;
@@ -42,6 +81,10 @@ export async function createMarkdownEditor(options: MarkdownEditorOptions): Prom
         uploader: createUploader(options.saveImage),
         enableHtmlFileUploader: false,
       }));
+      ctx.update(editorViewOptionsCtx, (current) => ({
+        ...current,
+        handleKeyDown: (view, event) => continueTaskList(view, event) || current.handleKeyDown?.(view, event) || false,
+      }));
       ctx.get(listenerCtx).markdownUpdated((_, markdown, previous) => {
         if (markdown !== previous) options.onChange(markdown);
       });
@@ -53,10 +96,29 @@ export async function createMarkdownEditor(options: MarkdownEditorOptions): Prom
     .use(listener)
     .use(upload)
     .use(createImageView(options.resolveImage))
+    .use(taskItemView)
     .use(linkPreviewPlugin(options.renderLinkPreview))
     .create();
 
+  const formats: Record<FormatCommand, () => void> = {
+    bold: () => editor.action(callCommand(toggleStrongCommand.key)),
+    italic: () => editor.action(callCommand(toggleEmphasisCommand.key)),
+    strike: () => editor.action(callCommand(toggleStrikethroughCommand.key)),
+    code: () => editor.action(callCommand(toggleInlineCodeCommand.key)),
+    paragraph: () => editor.action(callCommand(turnIntoTextCommand.key)),
+    heading1: () => editor.action(callCommand(wrapInHeadingCommand.key, 1)),
+    heading2: () => editor.action(callCommand(wrapInHeadingCommand.key, 2)),
+    heading3: () => editor.action(callCommand(wrapInHeadingCommand.key, 3)),
+    bulletList: () => editor.action(callCommand(wrapInBulletListCommand.key)),
+    orderedList: () => editor.action(callCommand(wrapInOrderedListCommand.key)),
+    taskList: () => editor.action((ctx) => toggleTaskList(ctx.get(editorViewCtx))),
+    quote: () => editor.action(callCommand(wrapInBlockquoteCommand.key)),
+    codeBlock: () => editor.action(callCommand(createCodeBlockCommand.key)),
+    rule: () => editor.action(callCommand(insertHrCommand.key)),
+  };
+
   return {
+    format: (command) => formats[command](),
     insertTable: () => editor.action(callCommand(insertTableCommand.key, DEFAULT_TABLE_SIZE)),
     insertImage: (src, alt) => editor.action(callCommand(insertImageCommand.key, { src, alt })),
     destroy: async () => {

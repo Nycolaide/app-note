@@ -1,516 +1,417 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import TitleBar from "$lib/ui/TitleBar.svelte";
-  import MarkdownEditor from "$lib/ui/MarkdownEditor.svelte";
-  import { createAttachmentUrls, type AttachmentUrls } from "$lib/ui/attachment-urls";
-  import { createLinkPreviewCard } from "$lib/ui/link-preview-card";
-  import { openUrl } from "@tauri-apps/plugin-opener";
-  import VaultPanel from "$lib/ui/VaultPanel.svelte";
-  import VaultTransfer from "$lib/ui/VaultTransfer.svelte";
-  import {
-    createLinkPreviewFileStore,
-    createLinkPreviews,
-    isSameOrInside,
-    moveToVault,
-    parentPath,
-    SyncScheduler,
-    VaultRegistry,
-    type ConnectRequest,
-    type FolderNode,
-    type NoteMeta,
-    type SyncStatus,
-    type Vault,
-    type VaultDescriptor,
-    type VaultSession,
-  } from "$lib/core";
+  import { onMount, untrack } from "svelte";
+  import { createGlobalTheme, useTheme } from "lapikit/hooks";
+  import { NotebookPen, X } from "@lucide/svelte";
+  import type { VaultDescriptor } from "$lib/core";
+  import HeaderBar from "$lib/ui/HeaderBar.svelte";
+  import Sidebar from "$lib/ui/panes/Sidebar.svelte";
+  import NoteList from "$lib/ui/panes/NoteList.svelte";
+  import TrashList from "$lib/ui/panes/TrashList.svelte";
+  import NoteView from "$lib/ui/panes/NoteView.svelte";
+  import NameDialog from "$lib/ui/dialogs/NameDialog.svelte";
+  import MoveDialog from "$lib/ui/dialogs/MoveDialog.svelte";
+  import ConnectDialog from "$lib/ui/dialogs/ConnectDialog.svelte";
+  import ConfirmDialog from "$lib/ui/dialogs/ConfirmDialog.svelte";
+  import AboutDialog from "$lib/ui/dialogs/AboutDialog.svelte";
+  import type { FolderActions, ThemeName } from "$lib/ui/panes/types";
+  import { folderLabel, NotesApp } from "$lib/ui/notes-app.svelte";
+  import { drawerLayout, mobileLayout } from "$lib/ui/viewport";
+  import { hasWindowControls, trackWindowFrame } from "$lib/ui/window";
+  import { sidebar } from "$lib/ui/layout.svelte";
 
-  const SAVE_DELAY_MS = 500;
-  const LAST_VAULT_KEY = "app-note:last-vault";
-  const linkPreviews = createLinkPreviews({ store: createLinkPreviewFileStore() });
-  const registry = new VaultRegistry();
+  type NameRequest = { mode: "create"; parent: string } | { mode: "rename"; path: string };
+  type MoveRequest = { kind: "note" | "folder"; path: string };
+  type ConfirmRequest = { title: string; message: string; confirmLabel: string; run: () => Promise<unknown> };
 
-  let vaults = $state.raw<VaultDescriptor[]>([]);
-  let session = $state.raw<VaultSession | null>(null);
-  let syncStatus = $state.raw<SyncStatus | null>(null);
-  let vault = $state.raw<Vault | null>(null);
-  let attachments: AttachmentUrls | undefined;
-  let scheduler: SyncScheduler | undefined;
-  let unsubscribe: (() => void) | undefined;
-  let stopWatching: (() => void) | undefined;
-  let editorGeneration = $state(0);
-  let version = $state(0);
-  let error = $state("");
+  const THEME_KEY = "runote:theme";
+  const app = new NotesApp();
+  const globalTheme = createGlobalTheme({ key: THEME_KEY, name: "system" });
 
-  let selectedFolder = $state("");
-  let selectedNotePath = $state<string | null>(null);
-  let activeTag = $state<string | null>(null);
-  let query = $state("");
-  let showTrash = $state(false);
-  let confirmingEmpty = $state(false);
+  let theme = $state<ThemeName>(asThemeName(globalTheme.active));
+  let toast: HTMLDivElement;
 
-  let newFolderName = $state("");
-  let folderName = $state("");
-  let folderTarget = $state("");
-  let noteTarget = $state("");
+  let nameOpen = $state(false);
+  let nameRequest = $state.raw<NameRequest>({ mode: "create", parent: "" });
+  let moveOpen = $state(false);
+  let moveRequest = $state.raw<MoveRequest>({ kind: "note", path: "" });
+  let connectOpen = $state(false);
+  let aboutOpen = $state(false);
+  let confirmOpen = $state(false);
+  let confirmRequest = $state.raw<ConfirmRequest>({ title: "", message: "", confirmLabel: "", run: async () => {} });
 
-  let draftTitle = $state("");
-  let draftContent = $state("");
-  let draftTags = $state("");
-  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  const listControls = $derived(hasWindowControls && mobileLayout.current);
+  const drawerClosed = $derived(drawerLayout.current && !sidebar.drawerOpen);
+  const dialogOpen = $derived(nameOpen || moveOpen || connectOpen || confirmOpen);
+  const dialogError = $derived(dialogOpen ? app.error : "");
 
-  const otherVaults = $derived(vaults.filter((descriptor) => descriptor.id !== session?.descriptor.id));
-  const tree = $derived(track((v) => v.tree(), undefined));
-  const folders = $derived(track((v) => v.folders(), []));
-  const tags = $derived(track((v) => v.tags(), []));
-  const trashEntries = $derived(track((v) => v.trash(), []));
-  const note = $derived(track((v) => (selectedNotePath ? v.getNote(selectedNotePath) : undefined), undefined));
-
-  const visibleNotes = $derived(
-    track((v): NoteMeta[] => {
-      if (query.trim()) return v.search(query);
-      if (activeTag) return v.notesWithTag(activeTag);
-      return v.notesIn(selectedFolder);
-    }, []),
-  );
-
-  const listTitle = $derived(
-    query.trim() ? `Recherche : ${query}` : activeTag ? `#${activeTag}` : label(selectedFolder),
-  );
+  const folderActions: FolderActions = {
+    create: (parent) => askName({ mode: "create", parent }),
+    rename: (path) => askName({ mode: "rename", path }),
+    move: (path) => askMove({ kind: "folder", path }),
+    trash: (path) =>
+      askConfirm({
+        title: "Mettre le dossier à la corbeille ?",
+        message: `« ${folderLabel(path)} » et tout son contenu iront dans la corbeille. Vous pourrez le restaurer pendant 30 jours.`,
+        confirmLabel: "Mettre à la corbeille",
+        run: () => app.trashFolder(path),
+      }),
+  };
 
   onMount(() => {
-    attempt(async () => {
-      vaults = await registry.list();
-      const lastId = readLastVaultId();
-      await openSession(vaults.find((descriptor) => descriptor.id === lastId) ?? vaults[0]);
-    });
-
-    return closeSession;
+    app.start();
+    const stopTracking = trackWindowFrame(document.documentElement);
+    return () => {
+      app.stop();
+      stopTracking.then((stop) => stop());
+    };
   });
 
-  async function openSession(descriptor: VaultDescriptor): Promise<void> {
-    await flushSave();
-    closeSession();
-    resetSelection();
+  $effect(() => {
+    void app.scope;
+    void app.selectedNotePath;
+    void app.session;
+    void drawerLayout.current;
+    untrack(() => sidebar.closeDrawer());
+  });
 
-    const opened = await registry.open(descriptor);
-    session = opened;
-    vault = opened.vault;
-    attachments = createAttachmentUrls(opened.vault);
-    unsubscribe = opened.vault.onChange(() => version++);
-    writeLastVaultId(descriptor.id);
-    attempt(() => opened.vault.cleanUp());
-    opened.vault
-      .watchExternalChanges(reloadOpenNote)
-      .then((stop) => (session === opened ? (stopWatching = stop) : stop()))
-      .catch(() => undefined);
-
-    if (opened.sync) {
-      scheduler = new SyncScheduler({
-        vault: opened.vault,
-        sync: opened.sync,
-        beforeSync: flushSave,
-        onStatus: (status) => (syncStatus = status),
-        onSynced: (report) => {
-          if (report.downloaded + report.deletedLocally + report.movedLocally > 0) reloadOpenNote();
-        },
-      });
-      scheduler.start();
+  function handleKey(event: KeyboardEvent): void {
+    if (event.key === "F9") {
+      event.preventDefault();
+      sidebar.toggle();
+    } else if (event.key === "Escape" && drawerLayout.current && sidebar.drawerOpen) {
+      sidebar.closeDrawer();
     }
   }
 
-  function closeSession(): void {
-    scheduler?.stop();
-    stopWatching?.();
-    stopWatching = undefined;
-    unsubscribe?.();
-    attachments?.dispose();
-    scheduler = undefined;
-    unsubscribe = undefined;
-    attachments = undefined;
-    syncStatus = null;
-    session = null;
-    vault = null;
+  $effect(() => {
+    if (toast.matches(":popover-open")) toast.hidePopover();
+    if (app.error && !dialogOpen) toast.showPopover();
+  });
+
+  function asThemeName(name: string): ThemeName {
+    return name === "light" || name === "dark" ? name : "system";
   }
 
-  function resetSelection(): void {
-    clearTimeout(saveTimer);
-    selectedFolder = "";
-    selectedNotePath = null;
-    activeTag = null;
-    query = "";
-    showTrash = false;
+  function changeTheme(name: ThemeName): void {
+    theme = name;
+    useTheme(name);
   }
 
-  function reloadOpenNote(): void {
-    if (!selectedNotePath) return;
-    const fresh = vault?.getNote(selectedNotePath);
-
-    if (!fresh) {
-      selectedNotePath = null;
-    } else if (fresh.content !== draftContent || fresh.tags.join(", ") !== draftTags) {
-      openNote(fresh.path);
-      editorGeneration++;
-    }
+  function openDialog(open: () => void): void {
+    app.error = "";
+    open();
   }
 
-  async function connectVault(request: ConnectRequest): Promise<void> {
-    await attempt(async () => {
-      const descriptor = await registry.connect(request);
-      vaults = await registry.list();
-      await openSession(descriptor);
+  async function runConfirmed(): Promise<boolean> {
+    await confirmRequest.run();
+    return app.error === "";
+  }
+
+  function askName(request: NameRequest): void {
+    nameRequest = request;
+    openDialog(() => (nameOpen = true));
+  }
+
+  function askMove(request: MoveRequest): void {
+    moveRequest = request;
+    openDialog(() => (moveOpen = true));
+  }
+
+  function askConfirm(request: ConfirmRequest): void {
+    confirmRequest = request;
+    openDialog(() => (confirmOpen = true));
+  }
+
+  function submitName(name: string): Promise<boolean> {
+    const request = nameRequest;
+    return request.mode === "create" ? app.createFolder(request.parent, name) : app.renameFolder(request.path, name);
+  }
+
+  function confirmRemoveVault(descriptor: VaultDescriptor): void {
+    askConfirm({
+      title: `Retirer « ${descriptor.name} » ?`,
+      message: "La copie sur cet appareil est effacée. Les notes restent sur le serveur WebDAV.",
+      confirmLabel: "Retirer",
+      run: () => app.removeVault(descriptor),
     });
   }
 
-  async function removeVault(descriptor: VaultDescriptor): Promise<void> {
-    await attempt(async () => {
-      await openSession(vaults[0]);
-      await registry.remove(descriptor.id);
-      vaults = await registry.list();
-    });
-  }
-
-  function readLastVaultId(): string | null {
-    try {
-      return localStorage.getItem(LAST_VAULT_KEY);
-    } catch {
-      return null;
-    }
-  }
-
-  function writeLastVaultId(id: string): void {
-    try {
-      localStorage.setItem(LAST_VAULT_KEY, id);
-    } catch {
-      return;
-    }
-  }
-
-  function track<T>(read: (vault: Vault) => T, fallback: T): T {
-    version;
-    return vault ? read(vault) : fallback;
-  }
-
-  function label(path: string): string {
-    return path === "" ? "Notes" : path;
-  }
-
-  async function attempt(action: () => Promise<unknown>): Promise<void> {
-    error = "";
-    try {
-      await action();
-    } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
-    }
-  }
-
-  function selectFolder(path: string): void {
-    selectedFolder = path;
-    folderName = path === "" ? "" : path.split("/").at(-1)!;
-    folderTarget = "";
-    activeTag = null;
-    query = "";
-    showTrash = false;
-  }
-
-  function selectTag(tag: string): void {
-    activeTag = tag;
-    query = "";
-    showTrash = false;
-  }
-
-  function openTrash(): void {
-    showTrash = true;
-    confirmingEmpty = false;
-    activeTag = null;
-    query = "";
-  }
-
-  async function openNote(path: string): Promise<void> {
-    await flushSave();
-    const opened = vault?.getNote(path);
-    if (!opened) return;
-    selectedNotePath = path;
-    draftTitle = opened.title;
-    draftContent = opened.content;
-    draftTags = opened.tags.join(", ");
-    noteTarget = "";
-  }
-
-  function updateContent(markdown: string): void {
-    draftContent = markdown;
-    scheduleSave();
-  }
-
-  function scheduleSave(): void {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(flushSave, SAVE_DELAY_MS);
-  }
-
-  async function flushSave(): Promise<void> {
-    clearTimeout(saveTimer);
-    saveTimer = undefined;
-    if (!vault || !note) return;
-    const target = vault;
-    const path = note.path;
-    const changes = { content: draftContent, tags: draftTags.split(",") };
-    await attempt(() => target.saveNote(path, changes));
-  }
-
-  function createFolder(event: SubmitEvent): void {
-    event.preventDefault();
-    attempt(async () => {
-      const path = await vault!.createFolder(selectedFolder, newFolderName);
-      newFolderName = "";
-      selectFolder(path);
-    });
-  }
-
-  function renameFolder(): void {
-    attempt(async () => selectFolder(await vault!.renameFolder(selectedFolder, folderName)));
-  }
-
-  function moveFolder(): void {
-    attempt(async () => selectFolder(await vault!.moveFolder(selectedFolder, folderTarget)));
-  }
-
-  function trashFolder(): void {
-    attempt(async () => {
-      const deleted = selectedFolder;
-      await vault!.trashFolder(deleted);
-      if (selectedNotePath?.startsWith(`${deleted}/`)) selectedNotePath = null;
-      selectFolder("");
-    });
-  }
-
-  function emptyTrash(): void {
-    confirmingEmpty = false;
-    attempt(() => vault!.emptyTrash());
-  }
-
-  function createNote(): void {
-    attempt(async () => {
-      const created = await vault!.createNote(selectedFolder);
-      await openNote(created.path);
-    });
-  }
-
-  function renameNote(): void {
-    if (!note || draftTitle === note.title) return;
-    const path = note.path;
-    const title = draftTitle;
-    attempt(async () => {
-      await flushSave();
-      const renamed = await vault!.renameNote(path, title);
-      await openNote(renamed.path);
-    });
-  }
-
-  function moveNote(): void {
-    if (!note) return;
-    const path = note.path;
-    const target = noteTarget;
-    attempt(async () => {
-      await flushSave();
-      const moved = await vault!.moveNote(path, target);
-      await openNote(moved.path);
-    });
-  }
-
-  async function moveNoteToVault(target: Vault, folder: string): Promise<void> {
-    if (!note || !vault) return;
-    const source = vault;
-    const path = note.path;
-    await attempt(async () => {
-      await flushSave();
-      await moveToVault(source, path, target, folder);
-      selectedNotePath = null;
-    });
-  }
-
-  async function moveFolderToVault(target: Vault, folder: string): Promise<void> {
-    if (!vault) return;
-    const source = vault;
-    const path = selectedFolder;
-    await attempt(async () => {
-      await flushSave();
-      await moveToVault(source, path, target, folder);
-      if (selectedNotePath && isSameOrInside(selectedNotePath, path)) selectedNotePath = null;
-      selectFolder("");
-    });
-  }
-
-  function trashNote(): void {
-    if (!note) return;
-    const path = note.path;
-    attempt(async () => {
-      clearTimeout(saveTimer);
-      await vault!.trashNote(path);
-      selectedNotePath = null;
+  function confirmEmptyTrash(): void {
+    askConfirm({
+      title: "Vider la corbeille ?",
+      message: "Tous les éléments de la corbeille seront supprimés définitivement.",
+      confirmLabel: "Vider",
+      run: () => app.emptyTrash(),
     });
   }
 </script>
 
-<TitleBar />
+<svelte:window onkeydown={handleKey} />
 
-<VaultPanel
-  {vaults}
-  current={session?.descriptor ?? null}
-  {syncStatus}
-  onswitch={(descriptor) => attempt(() => openSession(descriptor))}
-  onsync={() => scheduler?.syncNow()}
-  onremove={removeVault}
-  onconnect={connectVault}
-/>
-
-{#if error}
-  <p role="alert">Erreur : {error} <button onclick={() => (error = "")}>OK</button></p>
-{/if}
-
-{#if !vault}
-  <p>Chargement…</p>
-{:else}
-  <div class="layout">
-    <aside>
-      <input type="search" placeholder="Rechercher" bind:value={query} />
-
-      <h2>Dossiers</h2>
-      {#if tree}
-        <ul>{@render folderItem(tree)}</ul>
-      {/if}
-
-      <form onsubmit={createFolder}>
-        <input placeholder="Nouveau dossier" bind:value={newFolderName} required />
-        <button>Créer dans « {label(selectedFolder)} »</button>
-      </form>
-
-      {#if selectedFolder !== ""}
-        <fieldset>
-          <legend>Dossier « {label(selectedFolder)} »</legend>
-          <input bind:value={folderName} />
-          <button onclick={renameFolder}>Renommer</button>
-          <br />
-          <select bind:value={folderTarget}>
-            {#each folders as path (path)}
-              <option value={path}>{label(path)}</option>
-            {/each}
-          </select>
-          <button onclick={moveFolder}>Déplacer</button>
-          <br />
-          <button onclick={trashFolder}>Mettre à la corbeille (avec son contenu)</button>
-          <VaultTransfer {registry} vaults={otherVaults} onmove={moveFolderToVault} onerror={(message) => (error = message)} />
-        </fieldset>
-      {/if}
-
-      <h2>Tags</h2>
-      <ul>
-        {#each tags as { tag, count } (tag)}
-          <li>
-            <button onclick={() => selectTag(tag)}>
-              {activeTag === tag ? "▶ " : ""}#{tag} ({count})
-            </button>
-          </li>
-        {:else}
-          <li>Aucun tag</li>
-        {/each}
-      </ul>
-
-      <button onclick={openTrash}>{showTrash ? "▶ " : ""}Corbeille ({trashEntries.length})</button>
+<kit:app class="shell">
+  <div
+    class="workspace"
+    class:mobile={mobileLayout.current}
+    class:drawer={drawerLayout.current}
+    class:sidebar-hidden={!drawerLayout.current && !sidebar.open}
+    data-pane={app.pane}
+  >
+    {#if drawerLayout.current && sidebar.drawerOpen}
+      <button type="button" class="scrim" aria-label="Fermer les dossiers" onclick={() => sidebar.closeDrawer()}></button>
+    {/if}
+    <aside class="pane sidebar-pane" class:open={sidebar.drawerOpen} inert={drawerClosed}>
+      <Sidebar
+        {app}
+        {theme}
+        {folderActions}
+        onconnect={() => openDialog(() => (connectOpen = true))}
+        onabout={() => (aboutOpen = true)}
+        onremovevault={confirmRemoveVault}
+        ontheme={changeTheme}
+      />
     </aside>
 
-    <section>
-      {#if showTrash}
-        <h2>Corbeille</h2>
-        {#if trashEntries.length > 0}
-          {#if confirmingEmpty}
-            Tout supprimer définitivement ?
-            <button onclick={emptyTrash}>Oui, vider</button>
-            <button onclick={() => (confirmingEmpty = false)}>Annuler</button>
-          {:else}
-            <button onclick={() => (confirmingEmpty = true)}>Vider la corbeille</button>
-          {/if}
-        {/if}
-        <ul>
-          {#each trashEntries as entry (entry.id)}
-            <li>
-              {entry.kind === "folder" ? "📁" : "📄"} {entry.name}
-              <small>depuis « {label(parentPath(entry.originalPath))} »{entry.deletedAt ? `, supprimé ${new Date(entry.deletedAt).toLocaleString()}` : ""}</small>
-              <button onclick={() => attempt(() => vault!.restoreFromTrash(entry.id))}>Restaurer</button>
-              <button onclick={() => attempt(() => vault!.deleteFromTrash(entry.id))}>Supprimer définitivement</button>
-            </li>
-          {:else}
-            <li>La corbeille est vide</li>
-          {/each}
-        </ul>
+    <section class="pane list-pane">
+      {#if app.scope.kind === "trash" && !app.searching}
+        <TrashList {app} controls={listControls} onempty={confirmEmptyTrash} />
       {:else}
-      <h2>{listTitle}</h2>
-      <button onclick={createNote}>Nouvelle note dans « {label(selectedFolder)} »</button>
-      <ul>
-        {#each visibleNotes as meta (meta.path)}
-          <li>
-            <button onclick={() => openNote(meta.path)}>
-              {meta.path === selectedNotePath ? "▶ " : ""}{meta.title}
-            </button>
-            <small>{new Date(meta.updated).toLocaleString()}</small>
-          </li>
-        {:else}
-          <li>Aucune note</li>
-        {/each}
-      </ul>
+        <NoteList {app} controls={listControls} onmove={(path) => askMove({ kind: "note", path })} />
       {/if}
     </section>
 
-    <article>
-      {#if note}
-        <input bind:value={draftTitle} onchange={renameNote} />
-        <p><small>{note.path} — modifiée {new Date(note.updated).toLocaleString()}</small></p>
-        <label>
-          Tags (séparés par des virgules)
-          <input bind:value={draftTags} oninput={scheduleSave} onchange={flushSave} />
-        </label>
-        {#key `${note.path}#${editorGeneration}`}
-          <MarkdownEditor
-            value={note.content}
-            onchange={updateContent}
-            resolveImage={(source) => attachments?.resolve(source) ?? Promise.resolve("")}
-            saveImage={(data, fileName) => vault!.saveAttachment(data, fileName)}
-            renderLinkPreview={(url) => createLinkPreviewCard(url, linkPreviews.get, openUrl)}
-          />
-        {/key}
-        <select bind:value={noteTarget}>
-          {#each folders as path (path)}
-            <option value={path}>{label(path)}</option>
-          {/each}
-        </select>
-        <button onclick={moveNote}>Déplacer</button>
-        <button onclick={trashNote}>Mettre à la corbeille</button>
-        <VaultTransfer {registry} vaults={otherVaults} onmove={moveNoteToVault} onerror={(message) => (error = message)} />
+    <main class="pane note-pane">
+      {#if app.note}
+        <NoteView {app} note={app.note} controls={hasWindowControls} onmove={(path) => askMove({ kind: "note", path })} />
       {:else}
-        <p>Aucune note sélectionnée</p>
+        <div class="empty-view">
+          <HeaderBar flat controls={hasWindowControls} />
+          <div class="placeholder">
+            <NotebookPen size={64} strokeWidth={1.25} />
+            <h2>Aucune note ouverte</h2>
+            <p>Choisissez une note dans la liste ou créez-en une.</p>
+            <kit:btn variant="filled" color="accent" rounded="full" onclick={() => app.createNote()}>Nouvelle note</kit:btn>
+          </div>
+        </div>
       {/if}
-    </article>
+    </main>
   </div>
-{/if}
 
-{#snippet folderItem(node: FolderNode)}
-  <li>
-    <button onclick={() => selectFolder(node.path)}>
-      {node.path === selectedFolder && !activeTag && !query && !showTrash ? "▶ " : ""}{node.path === "" ? "Notes" : node.name}
-      ({node.noteCount})
-    </button>
-    {#if node.folders.length > 0}
-      <ul>
-        {#each node.folders as child (child.path)}
-          {@render folderItem(child)}
-        {/each}
-      </ul>
-    {/if}
-  </li>
-{/snippet}
+  <div class="toast" popover="manual" role="alert" bind:this={toast}>
+    <span>{app.error}</span>
+    <button type="button" aria-label="Fermer" onclick={() => (app.error = "")}><X size={16} /></button>
+  </div>
+
+  <NameDialog
+    bind:open={nameOpen}
+    title={nameRequest.mode === "create" ? "Nouveau dossier" : "Renommer le dossier"}
+    label="Nom du dossier"
+    initial={nameRequest.mode === "rename" ? folderLabel(nameRequest.path) : ""}
+    confirmLabel={nameRequest.mode === "create" ? "Créer" : "Renommer"}
+    error={dialogError}
+    onsubmit={submitName}
+  />
+
+  <MoveDialog
+    bind:open={moveOpen}
+    kind={moveRequest.kind}
+    path={moveRequest.path}
+    vaults={app.vaults}
+    current={app.session?.descriptor ?? null}
+    loadFolders={(descriptor) => app.foldersOf(descriptor)}
+    error={dialogError}
+    onmove={(destination) => app.move(moveRequest.kind, moveRequest.path, destination)}
+  />
+
+  <ConnectDialog
+    bind:open={connectOpen}
+    error={dialogError}
+    googleDriveAvailable={app.registry.googleDriveAvailable}
+    onconnect={(request) => app.connectVault(request)}
+    ongooglesignin={() => app.signInToGoogleDrive()}
+    ongooglecancel={() => app.cancelGoogleSignIn()}
+    ongoogleconnect={(request) => app.connectGoogleDrive(request)}
+  />
+
+  <AboutDialog bind:open={aboutOpen} />
+
+  <ConfirmDialog
+    bind:open={confirmOpen}
+    title={confirmRequest.title}
+    message={confirmRequest.message}
+    confirmLabel={confirmRequest.confirmLabel}
+    error={dialogError}
+    onconfirm={runConfirmed}
+  />
+</kit:app>
 
 <style>
-  .layout {
+  :global(.shell) {
+    display: flex;
+    flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  .workspace {
+    position: relative;
     display: grid;
-    grid-template-columns: 1fr 1fr 2fr;
-    gap: 1rem;
+    flex: 1;
+    grid-template-columns: var(--app-sidebar-width) var(--app-list-width) 1fr;
+    min-height: 0;
+  }
+
+  .pane {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .list-pane {
+    border-inline-end: 1px solid var(--app-headerbar-shade);
+  }
+
+  .workspace.sidebar-hidden {
+    grid-template-columns: var(--app-list-width) 1fr;
+  }
+
+  .workspace.sidebar-hidden .sidebar-pane {
+    display: none;
+  }
+
+  .workspace.drawer {
+    grid-template-columns: min(var(--app-list-width), 42%) 1fr;
+  }
+
+  .workspace.drawer .sidebar-pane {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 30;
+    width: min(85%, var(--app-drawer-width));
+    visibility: hidden;
+    box-shadow: 0 0 24px var(--app-shadow);
+    transform: translateX(-100%);
+    transition:
+      transform 200ms ease,
+      visibility 0s linear 200ms;
+  }
+
+  .workspace.drawer .sidebar-pane.open {
+    visibility: visible;
+    transform: none;
+    transition: transform 200ms ease;
+  }
+
+  .scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 25;
+    padding: 0;
+    border: 0;
+    background: rgb(0 0 6 / 0.3);
+    cursor: default;
+    animation: fade-in 200ms ease;
+  }
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .workspace.drawer .sidebar-pane,
+    .workspace.drawer .sidebar-pane.open,
+    .scrim {
+      transition: none;
+      animation: none;
+    }
+  }
+
+  .workspace.mobile {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace.mobile .list-pane,
+  .workspace.mobile .note-pane {
+    display: none;
+    border: 0;
+  }
+
+  .workspace.mobile[data-pane="list"] .list-pane,
+  .workspace.mobile[data-pane="note"] .note-pane {
+    display: block;
+  }
+
+  .workspace.mobile[data-pane="note"]:not(:has(.note-view)) .note-pane {
+    display: none;
+  }
+
+  .workspace.mobile[data-pane="note"]:not(:has(.note-view)) .list-pane {
+    display: block;
+  }
+
+  .empty-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--app-view-bg);
+  }
+
+  .placeholder {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 24px;
+    text-align: center;
+    color: var(--app-dim);
+  }
+
+  .placeholder h2 {
+    margin: 12px 0 0;
+    font-size: 1.4rem;
+    color: var(--app-fg);
+  }
+
+  .placeholder p {
+    margin: 0 0 12px;
+  }
+
+  .toast {
+    inset: auto 0 24px;
+    display: none;
+    align-items: center;
+    gap: 6px;
+    width: max-content;
+    max-width: min(32rem, calc(100vw - 24px));
+    margin-inline: auto;
+    padding: 6px 6px 6px 18px;
+    border: 0;
+    border-radius: 9999px;
+    background: var(--app-toast-bg);
+    color: var(--app-toast-fg);
+    box-shadow: 0 2px 8px var(--app-shadow);
+  }
+
+  .toast:popover-open {
+    display: flex;
+  }
+
+  .toast button {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .toast button:hover {
+    background: rgb(255 255 255 / 0.15);
   }
 </style>
