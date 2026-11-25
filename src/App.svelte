@@ -16,7 +16,7 @@
   import type { FolderActions, ThemeName } from "$lib/ui/panes/types";
   import { folderLabel, NotesApp } from "$lib/ui/notes-app.svelte";
   import { drawerLayout, mobileLayout } from "$lib/ui/viewport";
-  import { hasWindowControls, trackWindowFrame } from "$lib/ui/window";
+  import { beforeWindowClose, hasWindowControls, trackWindowFrame, watchMobileAppVisibility } from "$lib/ui/window";
   import { sidebar } from "$lib/ui/layout.svelte";
 
   type NameRequest = { mode: "create"; parent: string } | { mode: "rename"; path: string };
@@ -60,9 +60,16 @@
   onMount(() => {
     app.start();
     const stopTracking = trackWindowFrame(document.documentElement);
+    const stopCloseGuard = beforeWindowClose(() => app.syncBeforeExit());
+    const stopWatchingVisibility = watchMobileAppVisibility({
+      onBackground: () => app.saveAndSyncAll(),
+      onForeground: () => app.syncNow(),
+    });
     return () => {
+      stopWatchingVisibility();
       app.stop();
       stopTracking.then((stop) => stop());
+      stopCloseGuard.then((stop) => stop());
     };
   });
 
@@ -195,6 +202,13 @@
       {/if}
     </main>
   </div>
+
+  {#if app.exiting && app.hasRemoteVaults}
+    <div class="exit-notice" role="status">
+      <span class="exit-spinner" aria-hidden="true"></span>
+      <span>Synchronisation avant fermeture… <span class="exit-hint">Fermer à nouveau pour quitter tout de suite.</span></span>
+    </div>
+  {/if}
 
   <div class="toast" popover="manual" role="alert" bind:this={toast}>
     <span>{app.error}</span>
@@ -392,6 +406,43 @@
     background: var(--app-toast-bg);
     color: var(--app-toast-fg);
     box-shadow: 0 2px 8px var(--app-shadow);
+  }
+
+  .exit-notice {
+    position: fixed;
+    inset: auto 0 24px;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: max-content;
+    max-width: min(32rem, calc(100vw - 24px));
+    margin-inline: auto;
+    padding: 10px 18px;
+    border-radius: 9999px;
+    background: var(--app-toast-bg);
+    color: var(--app-toast-fg);
+    box-shadow: 0 2px 8px var(--app-shadow);
+  }
+
+  .exit-hint {
+    opacity: 0.7;
+  }
+
+  .exit-spinner {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: exit-spin 0.8s linear infinite;
+  }
+
+  @keyframes exit-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .toast:popover-open {

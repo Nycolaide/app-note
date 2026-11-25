@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import type { FolderNode } from "$lib/core";
   import type { DropdownTriggerProps } from "lapikit/components";
   import { ChevronRight, Ellipsis, Folder, NotebookText } from "@lucide/svelte";
@@ -11,9 +12,13 @@
     depth?: number;
     onselect: (path: string) => void;
     actions: FolderActions;
+    rootName?: string;
+    rootIcon?: Snippet;
+    rootBadges?: Snippet;
+    rootMenu?: Snippet;
   }
 
-  let { node, selected, depth = 0, onselect, actions }: Props = $props();
+  let { node, selected, depth = 0, onselect, actions, rootName = "Notes", rootIcon, rootBadges, rootMenu }: Props = $props();
   let expanded = $state(true);
 
   const isRoot = $derived(node.path === "");
@@ -24,8 +29,15 @@
 <li>
   <div class="row" class:active style:--depth={depth}>
     <button type="button" class="label" aria-current={active ? "page" : undefined} onclick={() => onselect(node.path)}>
-      {#if isRoot}<NotebookText size={16} />{:else}<Folder size={16} />{/if}
-      <span class="name">{isRoot ? "Notes" : node.name}</span>
+      {#if !isRoot}
+        <Folder size={16} />
+      {:else if rootIcon}
+        {@render rootIcon()}
+      {:else}
+        <NotebookText size={16} />
+      {/if}
+      <span class="name">{isRoot ? rootName : node.name}</span>
+      {#if isRoot}{@render rootBadges?.()}{/if}
     </button>
 
     <span class="count dim">{node.noteCount}</span>
@@ -40,6 +52,8 @@
           <button type="button" class="row-button" onclick={() => actions.rename(node.path)}>Renommer…</button>
           <button type="button" class="row-button" onclick={() => actions.move(node.path)}>Déplacer…</button>
           <button type="button" class="row-button destructive" onclick={() => actions.trash(node.path)}>Mettre à la corbeille</button>
+        {:else}
+          {@render rootMenu?.()}
         {/if}
       </div>
     </kit:dropdown>
