@@ -9,7 +9,7 @@
 
   let { open = $bindable() }: Props = $props();
 
-  const REPOSITORY_URL = "https://github.com/Nycolaide/app-note";
+  const REPOSITORY_URL = "https://github.com/Nycolaide/runote";
   const CREATOR = { name: "Nycolaide", url: "https://nycolaide.dev" };
 
   const details = Promise.all([getName(), getVersion()]);
