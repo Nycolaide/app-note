@@ -14,19 +14,17 @@ export interface SyncSchedulerOptions {
   beforeSync: () => Promise<void>;
   onStatus: (status: SyncStatus) => void;
   onSynced: (report: SyncReport) => void;
-  intervalMs?: number;
   afterChangeDelayMs?: number;
 }
 
-const DEFAULT_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_AFTER_CHANGE_DELAY_MS = 10_000;
 
 export class SyncScheduler {
   readonly #options: SyncSchedulerOptions;
   #status: SyncStatus = { running: false, lastSuccess: null, lastError: null, lastReport: null };
   #pending = false;
+  #current: Promise<void> | null = null;
   #stopped = false;
-  #interval: ReturnType<typeof setInterval> | undefined;
   #debounce: ReturnType<typeof setTimeout> | undefined;
   #unsubscribe: (() => void) | undefined;
 
@@ -35,32 +33,42 @@ export class SyncScheduler {
   }
 
   start(): void {
-    const { vault, intervalMs = DEFAULT_INTERVAL_MS, afterChangeDelayMs = DEFAULT_AFTER_CHANGE_DELAY_MS } = this.#options;
+    const { vault, afterChangeDelayMs = DEFAULT_AFTER_CHANGE_DELAY_MS } = this.#options;
 
     this.#unsubscribe = vault.onChange((origin) => {
       if (origin !== "local") return;
       clearTimeout(this.#debounce);
       this.#debounce = setTimeout(() => this.syncNow(), afterChangeDelayMs);
     });
-    this.#interval = setInterval(() => this.syncNow(), intervalMs);
     this.syncNow();
   }
 
   stop(): void {
     this.#stopped = true;
     this.#unsubscribe?.();
-    clearInterval(this.#interval);
     clearTimeout(this.#debounce);
   }
 
-  async syncNow(): Promise<void> {
-    if (this.#stopped) return;
+  syncNow(): Promise<void> {
+    if (this.#stopped) return Promise.resolve();
 
-    if (this.#status.running) {
+    if (this.#current) {
       this.#pending = true;
-      return;
+      return this.#current;
     }
 
+    this.#current = this.#runUntilSettled().finally(() => (this.#current = null));
+    return this.#current;
+  }
+
+  async #runUntilSettled(): Promise<void> {
+    do {
+      this.#pending = false;
+      await this.#runOnce();
+    } while (this.#pending && !this.#stopped);
+  }
+
+  async #runOnce(): Promise<void> {
     clearTimeout(this.#debounce);
     this.#update({ running: true });
 
@@ -73,11 +81,6 @@ export class SyncScheduler {
       this.#update({ lastError: cause instanceof Error ? cause.message : String(cause) });
     } finally {
       this.#update({ running: false });
-    }
-
-    if (this.#pending) {
-      this.#pending = false;
-      await this.syncNow();
     }
   }
 

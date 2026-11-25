@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { VaultDescriptor } from "$lib/core";
   import type { DropdownTriggerProps } from "lapikit/components";
-  import { Check, ChevronDown, Cloud, CloudAlert, HardDrive, Hash, Menu, PanelLeft, RefreshCw, Trash2 } from "@lucide/svelte";
+  import { Check, Cloud, CloudAlert, HardDrive, Menu, PanelLeft, RefreshCw, Trash2 } from "@lucide/svelte";
   import { sidebar } from "../layout.svelte";
   import { drawerLayout } from "../viewport";
   import HeaderBar from "../HeaderBar.svelte";
@@ -21,12 +21,13 @@
 
   let { app, theme, folderActions, onconnect, onabout, onremovevault, ontheme }: Props = $props();
 
-  const current = $derived(app.session?.descriptor ?? null);
-  const status = $derived(app.syncStatus);
+  const RING_CIRCUMFERENCE = 2 * Math.PI * 15;
+
+  const currentId = $derived(app.session?.descriptor.id ?? null);
+  const overview = $derived(app.syncOverview);
   const selectedFolder = $derived(app.scope.kind === "folder" && !app.searching ? app.scope.path : null);
   const selectedTag = $derived(app.scope.kind === "tag" && !app.searching ? app.scope.tag : null);
   const hideLabel = $derived(drawerLayout.current ? "Fermer les dossiers" : "Masquer la barre latérale");
-  const conflicts = $derived(status?.lastReport?.conflicts.length ?? 0);
 
   const themes: { name: ThemeName; label: string }[] = [
     { name: "system", label: "Suivre le système" },
@@ -35,14 +36,38 @@
   ];
 
   const syncLabel = $derived.by(() => {
-    if (!status) return "";
-    if (status.running) return "Synchronisation…";
-    if (status.lastError) return "Échec de la synchronisation";
-    if (status.lastSuccess) {
-      return `Synchronisé à ${status.lastSuccess.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-    }
+    if (overview.running) return "Synchronisation…";
+    if (overview.failures.length > 0) return "Échec de la synchro";
+    if (overview.lastSuccess) return `Synchronisé à ${formatTime(overview.lastSuccess)}`;
     return "Pas encore synchronisé";
   });
+
+  const failureDetails = $derived(overview.failures.map(({ name, message }) => `${name} : ${message}`).join("\n"));
+  const nextSyncLabel = $derived(app.nextSyncAt ? `Prochaine à ${formatTime(new Date(app.nextSyncAt))}` : "");
+
+  function formatTime(date: Date): string {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function elapsedSinceLastCycle(nextSyncAt: number): number {
+    return Math.min(app.syncIntervalMs, Math.max(0, app.syncIntervalMs - (nextSyncAt - Date.now())));
+  }
+
+  function actionsFor(descriptor: VaultDescriptor): FolderActions {
+    if (descriptor.id === currentId) return folderActions;
+    const inVault =
+      (action: (path: string) => void) =>
+      async (path: string): Promise<void> => {
+        await app.selectVaultFolder(descriptor, "");
+        if (app.session?.descriptor.id === descriptor.id) action(path);
+      };
+    return {
+      create: inVault(folderActions.create),
+      rename: inVault(folderActions.rename),
+      move: inVault(folderActions.move),
+      trash: inVault(folderActions.trash),
+    };
+  }
 </script>
 
 <nav class="sidebar" aria-label="Navigation">
@@ -60,29 +85,10 @@
     {/snippet}
 
     {#snippet center()}
-      <kit:dropdown closeOnClick elevation="2" position="bottom">
-        {#snippet trigger(props: DropdownTriggerProps)}
-          <button type="button" class="flat-button vault-switch" {...props}>
-            <span class="vault-name">{current?.name ?? "…"}</span>
-            <ChevronDown size={14} />
-          </button>
-        {/snippet}
-        <div class="menu">
-          {#each app.vaults as descriptor (descriptor.id)}
-            <button
-              type="button"
-              class="row-button"
-              aria-current={descriptor.id === current?.id ? "page" : undefined}
-              onclick={() => app.attempt(() => app.openVault(descriptor))}
-            >
-              {#if descriptor.remote}<Cloud size={16} />{:else}<HardDrive size={16} />{/if}
-              <span class="grow">{descriptor.name}</span>
-              {#if descriptor.remote?.kind === "google-drive"}<span class="beta-badge">Bêta</span>{/if}
-              {#if descriptor.id === current?.id}<Check size={16} />{/if}
-            </button>
-          {/each}
-        </div>
-      </kit:dropdown>
+      <span class="brand">
+        <img src="/runote.svg" alt="" width="22" height="22" />
+        Runote
+      </span>
     {/snippet}
 
     {#snippet end()}
@@ -109,11 +115,6 @@
           <hr />
           <button type="button" class="row-button" onclick={() => folderActions.create(app.currentFolder)}>Nouveau dossier</button>
           <button type="button" class="row-button" onclick={onconnect}>Ajouter un vault…</button>
-          {#if current?.remote}
-            <button type="button" class="row-button destructive" onclick={() => onremovevault(current)}>
-              Retirer « {current.name} »
-            </button>
-          {/if}
           <hr />
           <button type="button" class="row-button" onclick={onabout}>À propos</button>
         </div>
@@ -122,31 +123,38 @@
   </HeaderBar>
 
   <div class="scroll">
-    {#if app.tree}
-      <ul class="tree">
-        <FolderTree node={app.tree} selected={selectedFolder} onselect={(path) => app.showFolder(path)} actions={folderActions} />
-      </ul>
-    {/if}
-
-    {#if app.tags.length > 0}
-      <h2>Tags</h2>
-      <ul>
-        {#each app.tags as { tag, count } (tag)}
-          <li>
-            <button
-              type="button"
-              class="row-button"
-              aria-current={selectedTag === tag ? "page" : undefined}
-              onclick={() => app.showTag(tag)}
-            >
-              <Hash size={16} />
-              <span class="grow">{tag}</span>
-              <span class="dim count">{count}</span>
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <ul class="tree" aria-label="Vaults">
+      {#each app.vaults as descriptor (descriptor.id)}
+        {@const tree = app.trees.get(descriptor.id)}
+        {@const failure = app.syncStatuses[descriptor.id]?.lastError}
+        {#if tree}
+          <FolderTree
+            node={tree}
+            rootName={descriptor.name}
+            selected={descriptor.id === currentId ? selectedFolder : null}
+            onselect={(path) => app.selectVaultFolder(descriptor, path)}
+            actions={actionsFor(descriptor)}
+          >
+            {#snippet rootIcon()}
+              {#if descriptor.remote}<Cloud size={16} />{:else}<HardDrive size={16} />{/if}
+            {/snippet}
+            {#snippet rootBadges()}
+              {#if descriptor.remote?.kind === "google-drive"}<span class="beta-badge">Bêta</span>{/if}
+              {#if failure}
+                <span class="vault-alert" title={failure} aria-label="Échec de la synchronisation"><CloudAlert size={14} /></span>
+              {/if}
+            {/snippet}
+            {#snippet rootMenu()}
+              {#if descriptor.remote}
+                <button type="button" class="row-button destructive" onclick={() => onremovevault(descriptor)}>
+                  Retirer « {descriptor.name} »
+                </button>
+              {/if}
+            {/snippet}
+          </FolderTree>
+        {/if}
+      {/each}
+    </ul>
 
     <hr />
     <button
@@ -161,17 +169,63 @@
     </button>
   </div>
 
-  {#if status}
-    <footer class:failed={status.lastError}>
-      {#if status.lastError}<CloudAlert size={16} />{/if}
-      <span class="grow" title={status.lastError ?? undefined}>{syncLabel}</span>
-      <button type="button" class="flat-button" aria-label="Synchroniser maintenant" disabled={status.running} onclick={() => app.syncNow()}>
-        <span class="spin" class:running={status.running}><RefreshCw size={16} /></span>
+  {#if app.topTags.length > 0}
+    <section class="tags" aria-labelledby="tags-title">
+      <h2 id="tags-title">Tags</h2>
+      <div class="chips">
+        {#each app.topTags as { tag, count } (tag)}
+          <button
+            type="button"
+            class="chip"
+            aria-current={selectedTag === tag ? "page" : undefined}
+            onclick={() => app.showTag(tag)}
+          >
+            #{tag}
+            <span class="chip-count">{count}</span>
+          </button>
+        {/each}
+      </div>
+    </section>
+  {/if}
+
+  {#if app.hasRemoteVaults}
+    <footer class:failed={overview.failures.length > 0}>
+      <div class="sync-text">
+        <span class="sync-label" title={failureDetails || undefined}>{syncLabel}</span>
+        {#if overview.conflicts > 0}
+          <span class="sync-detail">{overview.conflicts} conflit{overview.conflicts > 1 ? "s" : ""} : une copie a été créée à côté de la note.</span>
+        {:else if nextSyncLabel}
+          <span class="sync-detail">{nextSyncLabel}</span>
+        {/if}
+      </div>
+      <button
+        type="button"
+        class="sync-timer"
+        aria-label="Synchroniser maintenant"
+        title="Synchroniser maintenant"
+        disabled={overview.running}
+        onclick={() => app.syncNow()}
+      >
+        <svg viewBox="0 0 36 36" aria-hidden="true">
+          <circle class="track" cx="18" cy="18" r="15" />
+          {#if app.nextSyncAt && !overview.running}
+            {#key app.nextSyncAt}
+              <circle
+                class="progress"
+                cx="18"
+                cy="18"
+                r="15"
+                stroke-dasharray={RING_CIRCUMFERENCE}
+                style:--ring-circumference={RING_CIRCUMFERENCE}
+                style:animation-duration="{app.syncIntervalMs}ms"
+                style:animation-delay="-{elapsedSinceLastCycle(app.nextSyncAt)}ms"
+              />
+            {/key}
+          {/if}
+        </svg>
+        <span class="spin" class:running={overview.running}><RefreshCw size={14} /></span>
       </button>
     </footer>
-    {#if conflicts > 0}
-      <p class="conflicts">{conflicts} conflit{conflicts > 1 ? "s" : ""} : une copie a été créée à côté de la note.</p>
-    {/if}
   {/if}
 </nav>
 
@@ -187,17 +241,16 @@
     box-shadow: none;
   }
 
-  .vault-switch {
+  .brand {
     display: flex;
-    gap: 6px;
-    max-width: 100%;
+    align-items: center;
+    gap: 8px;
     font-weight: 700;
   }
 
-  .vault-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .vault-alert {
+    display: grid;
+    color: var(--app-destructive-text);
   }
 
   .menu {
@@ -267,17 +320,55 @@
     list-style: none;
   }
 
-  ul + h2,
-  .tree + h2 {
-    margin-top: 12px;
+  .tags {
+    padding: 6px 12px 10px;
+    border-top: 1px solid var(--app-border);
   }
 
   h2 {
-    margin: 0;
-    padding: 6px 12px;
+    margin: 0 0 8px;
     font-size: 0.8rem;
     font-weight: 700;
     color: var(--app-dim);
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    min-height: 28px;
+    padding: 0 10px;
+    overflow: hidden;
+    border: 0;
+    border-radius: 999px;
+    background: var(--app-hover);
+    color: inherit;
+    font: inherit;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+
+  .chip:hover {
+    background: var(--app-active);
+  }
+
+  .chip[aria-current="page"] {
+    background: var(--app-accent);
+    color: var(--app-accent-fg);
+  }
+
+  .chip-count {
+    font-size: 0.75rem;
+    opacity: 0.7;
   }
 
   .grow {
@@ -294,14 +385,89 @@
   footer {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 6px 6px 12px;
-    font-size: 0.85rem;
+    gap: 8px;
+    padding: 8px 8px 8px 12px;
+    border-top: 1px solid var(--app-border);
     color: var(--app-dim);
   }
 
-  footer.failed {
+  footer.failed .sync-label {
     color: var(--app-destructive-text);
+  }
+
+  .sync-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .sync-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+
+  .sync-detail {
+    font-size: 0.75rem;
+  }
+
+  .sync-timer {
+    position: relative;
+    display: grid;
+    flex-shrink: 0;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--app-fg);
+    cursor: pointer;
+  }
+
+  .sync-timer:hover:not(:disabled) {
+    background: var(--app-hover);
+  }
+
+  .sync-timer:disabled {
+    cursor: default;
+  }
+
+  .sync-timer svg {
+    position: absolute;
+    inset: 0;
+    transform: rotate(-90deg);
+  }
+
+  .sync-timer circle {
+    fill: none;
+    stroke-width: 3;
+  }
+
+  .track {
+    stroke: var(--app-border);
+  }
+
+  .progress {
+    stroke: var(--app-accent);
+    stroke-linecap: round;
+    animation-name: fill-ring;
+    animation-timing-function: linear;
+    animation-fill-mode: both;
+  }
+
+  footer.failed .progress {
+    stroke: var(--app-destructive-text);
+  }
+
+  @keyframes fill-ring {
+    from {
+      stroke-dashoffset: var(--ring-circumference);
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
   }
 
   .spin {
@@ -316,11 +482,5 @@
     to {
       transform: rotate(360deg);
     }
-  }
-
-  .conflicts {
-    margin: 0 12px 8px;
-    font-size: 0.8rem;
-    color: var(--app-dim);
   }
 </style>
