@@ -265,6 +265,10 @@
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 
+  :global([data-keyboard-open] .shell) {
+    padding-bottom: 0;
+  }
+
   .workspace {
     position: relative;
     display: grid;

@@ -135,6 +135,7 @@
   .scroll {
     flex: 1;
     overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .page {
