@@ -485,8 +485,21 @@ export class NotesApp {
   }
 
   saveImage(data: Uint8Array, fileName: string): Promise<string> {
-    if (!this.vault) return Promise.reject(new Error("Aucun vault ouvert"));
-    return this.vault.saveAttachment(data, fileName);
+    const vault = this.vault;
+    if (!vault) return Promise.reject(new Error("Aucun vault ouvert"));
+
+    const path = vault.newAttachmentPath(fileName);
+    const attachments = this.#attachments;
+    attachments?.preload(path, data);
+
+    void this.attempt(() =>
+      vault.writeAttachment(path, data).catch((error: unknown) => {
+        attachments?.forget(path);
+        throw error;
+      }),
+    );
+
+    return Promise.resolve(path);
   }
 
   async #withVault(action: (vault: Vault) => Promise<unknown>): Promise<void> {

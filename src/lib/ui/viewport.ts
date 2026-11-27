@@ -2,15 +2,15 @@ import { MediaQuery } from "svelte/reactivity";
 
 export const mobileLayout = new MediaQuery("(max-width: 639px)");
 export const drawerLayout = new MediaQuery("(max-width: 1099px)");
+export const touchLayout = new MediaQuery("(pointer: coarse)");
 
 const KEYBOARD_THRESHOLD_PX = 120;
+const KEYBOARD_EVENT = "runote:keyboard";
 
-function revealCaret() {
-  const focused = document.activeElement;
-  if (!(focused instanceof HTMLElement) || !focused.isContentEditable) return;
-  const caretNode = window.getSelection()?.focusNode;
-  const caretElement = caretNode instanceof Element ? caretNode : caretNode?.parentElement;
-  caretElement?.scrollIntoView({ block: "nearest" });
+export function onKeyboardToggle(listener: (open: boolean) => void): () => void {
+  const handle = (event: Event) => listener((event as CustomEvent<boolean>).detail);
+  window.addEventListener(KEYBOARD_EVENT, handle);
+  return () => window.removeEventListener(KEYBOARD_EVENT, handle);
 }
 
 export function fitToVisualViewport() {
@@ -27,7 +27,7 @@ export function fitToVisualViewport() {
     const keyboardOpen = window.innerHeight - viewport.height > KEYBOARD_THRESHOLD_PX;
     root.toggleAttribute("data-keyboard-open", keyboardOpen);
     if (window.scrollY !== 0) window.scrollTo(0, 0);
-    if (keyboardOpen && !keyboardWasOpen) requestAnimationFrame(revealCaret);
+    if (keyboardOpen !== keyboardWasOpen) window.dispatchEvent(new CustomEvent(KEYBOARD_EVENT, { detail: keyboardOpen }));
     keyboardWasOpen = keyboardOpen;
   };
 

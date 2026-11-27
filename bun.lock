@@ -11,6 +11,7 @@
         "@tauri-apps/plugin-fs": "~2",
         "@tauri-apps/plugin-http": "~2",
         "@tauri-apps/plugin-opener": "^2.7.3",
+        "prosemirror-view": "^1.43.1",
       },
       "devDependencies": {
         "@sveltejs/vite-plugin-svelte": "^7.3.2",

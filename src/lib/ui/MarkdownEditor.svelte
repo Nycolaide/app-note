@@ -1,7 +1,9 @@
 <script lang="ts">
+  import "prosemirror-view/style/prosemirror.css";
   import { onMount, type Component } from "svelte";
   import {
     Bold,
+    CaseSensitive,
     Code,
     Heading1,
     Heading2,
@@ -9,17 +11,23 @@
     ImagePlus,
     Italic,
     List,
+    ListIndentDecrease,
+    ListIndentIncrease,
     ListOrdered,
     ListTodo,
     Minus,
     Pilcrow,
     Quote,
     SquareCode,
+    SquarePen,
     Strikethrough,
     Table,
+    Underline,
+    X,
   } from "@lucide/svelte";
   import { createMarkdownEditor, type FormatCommand, type MarkdownEditor } from "./markdown-editor";
   import type { LinkPreviewRenderer } from "./link-preview-plugin";
+  import { onKeyboardToggle, touchLayout } from "./viewport";
 
   interface Props {
     value: string;
@@ -27,47 +35,112 @@
     resolveImage: (source: string) => Promise<string>;
     saveImage: (data: Uint8Array, fileName: string) => Promise<string>;
     renderLinkPreview: LinkPreviewRenderer;
+    editing?: boolean;
   }
 
   interface Tool {
     label: string;
     icon: Component<{ size?: number }>;
     run: () => void;
+    state?: FormatCommand;
   }
 
-  let { value, onchange, resolveImage, saveImage, renderLinkPreview }: Props = $props();
+  interface TextStyle {
+    label: string;
+    command: FormatCommand;
+  }
+
+  let { value, onchange, resolveImage, saveImage, renderLinkPreview, editing = $bindable(false) }: Props = $props();
   let root: HTMLDivElement;
   let fileInput: HTMLInputElement;
   let editor = $state.raw<MarkdownEditor | undefined>();
+  let activeFormats = $state.raw<ReadonlySet<FormatCommand>>(new Set());
+  let editorFocused = $state(false);
+  let formatPanelOpen = $state(false);
+
+  const touchEditing = $derived(touchLayout.current && (editorFocused || formatPanelOpen));
+
+  $effect(() => {
+    editing = touchEditing;
+  });
 
   const format = (command: FormatCommand) => () => editor?.format(command);
+  const toggle = (label: string, icon: Tool["icon"], command: FormatCommand): Tool => ({
+    label,
+    icon,
+    run: format(command),
+    state: command,
+  });
+  const action = (label: string, icon: Tool["icon"], run: () => void): Tool => ({ label, icon, run });
 
-  const toolGroups: Tool[][] = [
+  const bold = toggle("Gras", Bold, "bold");
+  const italic = toggle("Italique", Italic, "italic");
+  const underline = toggle("Souligné", Underline, "underline");
+  const strike = toggle("Barré", Strikethrough, "strike");
+  const inlineCode = toggle("Code", Code, "code");
+  const bulletList = toggle("Liste à puces", List, "bulletList");
+  const orderedList = toggle("Liste numérotée", ListOrdered, "orderedList");
+  const taskList = toggle("Liste de tâches", ListTodo, "taskList");
+  const quote = toggle("Citation", Quote, "quote");
+  const codeBlock = toggle("Bloc de code", SquareCode, "codeBlock");
+  const outdent = action("Diminuer le retrait", ListIndentDecrease, format("outdent"));
+  const indent = action("Augmenter le retrait", ListIndentIncrease, format("indent"));
+  const rule = action("Séparateur", Minus, format("rule"));
+  const table = action("Tableau", Table, () => editor?.insertTable());
+  const image = action("Image", ImagePlus, () => fileInput.click());
+
+  const desktopGroups: Tool[][] = [
     [
-      { label: "Texte", icon: Pilcrow, run: format("paragraph") },
-      { label: "Titre", icon: Heading1, run: format("heading1") },
-      { label: "Sous-titre", icon: Heading2, run: format("heading2") },
-      { label: "Intertitre", icon: Heading3, run: format("heading3") },
+      toggle("Texte", Pilcrow, "paragraph"),
+      toggle("Titre", Heading1, "heading1"),
+      toggle("Sous-titre", Heading2, "heading2"),
+      toggle("Intertitre", Heading3, "heading3"),
     ],
-    [
-      { label: "Gras", icon: Bold, run: format("bold") },
-      { label: "Italique", icon: Italic, run: format("italic") },
-      { label: "Barré", icon: Strikethrough, run: format("strike") },
-      { label: "Code", icon: Code, run: format("code") },
-    ],
-    [
-      { label: "Liste à puces", icon: List, run: format("bulletList") },
-      { label: "Liste numérotée", icon: ListOrdered, run: format("orderedList") },
-      { label: "Liste de tâches", icon: ListTodo, run: format("taskList") },
-      { label: "Citation", icon: Quote, run: format("quote") },
-      { label: "Bloc de code", icon: SquareCode, run: format("codeBlock") },
-    ],
-    [
-      { label: "Tableau", icon: Table, run: () => editor?.insertTable() },
-      { label: "Image", icon: ImagePlus, run: () => fileInput.click() },
-      { label: "Séparateur", icon: Minus, run: format("rule") },
-    ],
+    [bold, italic, underline, strike, inlineCode],
+    [bulletList, orderedList, taskList, quote, codeBlock],
+    [table, image, rule],
   ];
+
+  const quickTools: Tool[] = [taskList, table, image, bold, italic];
+
+  const textStyles: TextStyle[] = [
+    { label: "Titre", command: "heading1" },
+    { label: "Sous-titre", command: "heading2" },
+    { label: "Intertitre", command: "heading3" },
+    { label: "Texte", command: "paragraph" },
+  ];
+
+  const panelRows: Tool[][][] = [
+    [[bold, italic, underline, strike, inlineCode]],
+    [
+      [bulletList, taskList, orderedList],
+      [outdent, indent],
+    ],
+    [[quote, codeBlock, rule]],
+  ];
+
+  export function undo(): void {
+    editor?.undo();
+  }
+
+  function keepEditorFocus(event: MouseEvent): void {
+    event.preventDefault();
+  }
+
+  function blurEditor(): void {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && root.contains(focused)) focused.blur();
+  }
+
+  function openFormatPanel(): void {
+    formatPanelOpen = true;
+    blurEditor();
+  }
+
+  function closeFormatPanel(): void {
+    formatPanelOpen = false;
+    editor?.focus();
+  }
 
   async function storeImage(file: File): Promise<string> {
     return saveImage(new Uint8Array(await file.arrayBuffer()), file.name);
@@ -90,49 +163,143 @@
       resolveImage: (source) => resolveImage(source),
       saveImage: storeImage,
       renderLinkPreview: (url) => renderLinkPreview(url),
+      onActiveFormatsChange: (active) => (activeFormats = active),
     });
 
     created.then((instance) => (editor = instance));
 
+    const stopWatchingKeyboard = onKeyboardToggle((open) => {
+      if (open && editorFocused) requestAnimationFrame(() => editor?.revealCursor());
+      if (!open && editorFocused && !formatPanelOpen) blurEditor();
+    });
+
     return () => {
+      stopWatchingKeyboard();
       editor = undefined;
       created.then((instance) => instance.destroy());
     };
   });
 </script>
 
-<div class="editor">
-  <div class="format-bar" role="toolbar" aria-label="Mise en forme">
-    <div class="tools">
-      {#each toolGroups as group, index (index)}
-        <div class="group">
-          {#each group as tool (tool.label)}
-            {@const Icon = tool.icon}
-            <button
-              type="button"
-              aria-label={tool.label}
-              title={tool.label}
-              disabled={!editor}
-              onmousedown={(event) => event.preventDefault()}
-              onclick={tool.run}
-            >
-              <Icon size={16} />
-            </button>
+{#snippet toolButton(tool: Tool, size: number)}
+  {@const Icon = tool.icon}
+  <button
+    type="button"
+    class="tool"
+    aria-label={tool.label}
+    title={tool.label}
+    aria-pressed={tool.state ? activeFormats.has(tool.state) : undefined}
+    disabled={!editor}
+    onmousedown={keepEditorFocus}
+    onclick={tool.run}
+  >
+    <Icon {size} />
+  </button>
+{/snippet}
+
+<div class="editor" class:panel-open={formatPanelOpen}>
+  {#if !touchLayout.current}
+    <div class="format-bar" role="toolbar" aria-label="Mise en forme">
+      <div class="tools">
+        {#each desktopGroups as group, index (index)}
+          <div class="group">
+            {#each group as tool (tool.label)}
+              {@render toolButton(tool, 16)}
+            {/each}
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+  <input bind:this={fileInput} type="file" accept="image/*" multiple hidden onchange={insertPickedImages} />
+
+  <div
+    class="content"
+    bind:this={root}
+    onfocusin={() => {
+      editorFocused = true;
+      formatPanelOpen = false;
+    }}
+    onfocusout={() => (editorFocused = false)}
+  ></div>
+</div>
+
+{#if touchLayout.current}
+  {#if formatPanelOpen}
+    <div class="format-panel" role="toolbar" aria-label="Format">
+      <header class="panel-header">
+        <span class="panel-title">Format</span>
+        <button
+          type="button"
+          class="panel-close"
+          aria-label="Fermer le panneau Format"
+          onmousedown={keepEditorFocus}
+          onclick={closeFormatPanel}
+        >
+          <X size={16} />
+        </button>
+      </header>
+
+      <div class="text-styles">
+        {#each textStyles as style (style.command)}
+          <button
+            type="button"
+            class="text-style {style.command}"
+            aria-pressed={activeFormats.has(style.command)}
+            disabled={!editor}
+            onmousedown={keepEditorFocus}
+            onclick={format(style.command)}
+          >
+            {style.label}
+          </button>
+        {/each}
+      </div>
+
+      {#each panelRows as row, rowIndex (rowIndex)}
+        <div class="panel-row">
+          {#each row as group, groupIndex (groupIndex)}
+            <div class="segment">
+              {#each group as tool (tool.label)}
+                {@render toolButton(tool, 18)}
+              {/each}
+            </div>
           {/each}
         </div>
       {/each}
     </div>
-  </div>
-  <input bind:this={fileInput} type="file" accept="image/*" multiple hidden onchange={insertPickedImages} />
-
-  <div class="content" bind:this={root}></div>
-</div>
+  {:else if touchEditing}
+    <div class="quick-bar" role="toolbar" aria-label="Mise en forme">
+      <button
+        type="button"
+        class="tool"
+        aria-label="Format"
+        title="Format"
+        disabled={!editor}
+        onmousedown={keepEditorFocus}
+        onclick={openFormatPanel}
+      >
+        <CaseSensitive size={20} />
+      </button>
+      {#each quickTools as tool (tool.label)}
+        {@render toolButton(tool, 18)}
+      {/each}
+    </div>
+  {:else}
+    <button type="button" class="edit-fab" aria-label="Modifier la note" disabled={!editor} onclick={() => editor?.focusEnd()}>
+      <SquarePen size={22} />
+    </button>
+  {/if}
+{/if}
 
 <style>
   .editor {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+  }
+
+  .editor.panel-open {
+    padding-bottom: 18rem;
   }
 
   .format-bar {
@@ -155,6 +322,7 @@
 
   .group {
     display: flex;
+    flex-shrink: 0;
     gap: 2px;
   }
 
@@ -167,8 +335,9 @@
     background: var(--app-border);
   }
 
-  .format-bar button {
+  .tool {
     display: grid;
+    flex-shrink: 0;
     place-items: center;
     width: 32px;
     height: 32px;
@@ -179,22 +348,154 @@
     cursor: pointer;
   }
 
-  .format-bar button:hover:not(:disabled) {
+  .tool:hover:not(:disabled) {
     background: var(--app-hover);
     color: var(--app-fg);
   }
 
-  .format-bar button:active:not(:disabled) {
+  .tool:active:not(:disabled) {
     background: var(--app-active);
   }
 
-  .group {
-    flex-shrink: 0;
+  .tool[aria-pressed="true"],
+  .text-style[aria-pressed="true"] {
+    background: var(--app-accent-selected);
+    color: var(--app-accent-text);
   }
 
-  .format-bar button:disabled {
+  .tool:disabled,
+  .text-style:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .quick-bar,
+  .format-panel,
+  .edit-fab {
+    position: absolute;
+    z-index: 2;
+    box-shadow:
+      0 0 0 1px var(--app-border),
+      0 2px 8px var(--app-shadow);
+  }
+
+  .quick-bar {
+    bottom: 10px;
+    left: 50%;
+    display: flex;
+    gap: 4px;
+    max-width: calc(100% - 20px);
+    padding: 4px;
+    overflow-x: auto;
+    border-radius: 999px;
+    background: var(--app-popover-bg);
+    scrollbar-width: none;
+    transform: translateX(-50%);
+  }
+
+  .quick-bar .tool,
+  .segment .tool {
+    width: 40px;
+    height: 40px;
+    border-radius: 999px;
+    color: var(--app-fg);
+  }
+
+  .edit-fab {
+    right: 16px;
+    bottom: 16px;
+    display: grid;
+    place-items: center;
+    width: 56px;
+    height: 56px;
+    border: 0;
+    border-radius: var(--kit-shape-xl);
+    background: var(--app-accent);
+    color: var(--app-accent-fg);
+    cursor: pointer;
+  }
+
+  .format-panel {
+    inset-inline: 8px;
+    bottom: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 30rem;
+    margin-inline: auto;
+    padding: 12px;
+    border-radius: var(--kit-shape-xl);
+    background: var(--app-popover-bg);
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-inline-start: 4px;
+  }
+
+  .panel-title {
+    font-weight: 700;
+  }
+
+  .panel-close {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--app-hover);
+    color: var(--app-fg);
+    cursor: pointer;
+  }
+
+  .text-styles {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .text-style {
+    flex-shrink: 0;
+    padding: 6px 14px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--app-hover);
+    color: var(--app-fg);
+    font: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .text-style.heading1 {
+    font-size: 1.25rem;
+    font-weight: 800;
+  }
+
+  .text-style.heading2 {
+    font-size: 1.1rem;
+    font-weight: 700;
+  }
+
+  .text-style.heading3 {
+    font-weight: 700;
+  }
+
+  .panel-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .segment {
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 999px;
+    background: var(--app-hover);
   }
 
   .content :global(.ProseMirror) {
@@ -337,6 +638,47 @@
   .content :global(img) {
     max-width: 100%;
     border-radius: 12px;
+    box-shadow: 0 0 0 1px var(--app-border);
+  }
+
+  .content :global(.image-frame[data-state="ready"] .image-status) {
+    display: none;
+  }
+
+  .content :global(.image-frame:not([data-state="ready"])) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 10rem;
+    border-radius: 12px;
+    background: var(--app-hover);
+    color: var(--app-dim);
+    font-size: 0.9rem;
+  }
+
+  .content :global(.image-frame:not([data-state="ready"]) img) {
+    display: none;
+  }
+
+  .content :global(.image-frame[data-state="loading"]) {
+    animation: image-loading-pulse 1.2s ease-in-out infinite alternate;
+  }
+
+  @keyframes -global-image-loading-pulse {
+    from {
+      opacity: 1;
+    }
+
+    to {
+      opacity: 0.5;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .content :global(.image-frame[data-state="loading"]) {
+      animation: none;
+    }
   }
 
   .content :global(table) {

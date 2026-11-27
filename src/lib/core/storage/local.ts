@@ -10,6 +10,7 @@ import {
   watch,
   writeFile,
   writeTextFile,
+  type WatchEventKind,
 } from "@tauri-apps/plugin-fs";
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { baseName, joinPath, parentPath } from "../path";
@@ -78,6 +79,7 @@ export class LocalStorageProvider implements StorageProvider {
     return watch(
       this.#root,
       (event) => {
+        if (isReadOnlyAccess(event.type)) return;
         const paths = event.paths
           .map(toForwardSlashes)
           .filter((path) => path.startsWith(`${root}/`))
@@ -100,6 +102,10 @@ export class LocalStorageProvider implements StorageProvider {
   #resolve(path: string): string {
     return joinPath(this.#root, path);
   }
+}
+
+function isReadOnlyAccess(kind: WatchEventKind): boolean {
+  return typeof kind === "object" && "access" in kind;
 }
 
 function toForwardSlashes(path: string): string {

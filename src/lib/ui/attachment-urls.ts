@@ -16,16 +16,21 @@ const IMAGE_TYPES: Record<string, string> = {
 
 export interface AttachmentUrls {
   resolve(source: string): Promise<string>;
+  preload(path: string, data: Uint8Array): void;
+  forget(path: string): void;
   dispose(): void;
+}
+
+function toObjectUrl(path: string, data: Uint8Array): string {
+  const extension = path.split(".").at(-1)?.toLowerCase() ?? "";
+  return URL.createObjectURL(new Blob([data as Uint8Array<ArrayBuffer>], { type: IMAGE_TYPES[extension] ?? "" }));
 }
 
 export function createAttachmentUrls(vault: Vault): AttachmentUrls {
   const cache = new Map<string, Promise<string>>();
 
   async function load(path: string): Promise<string> {
-    const data = await vault.readAttachment(path);
-    const extension = path.split(".").at(-1)?.toLowerCase() ?? "";
-    return URL.createObjectURL(new Blob([data], { type: IMAGE_TYPES[extension] ?? "" }));
+    return toObjectUrl(path, await vault.readAttachment(path));
   }
 
   return {
@@ -42,6 +47,15 @@ export function createAttachmentUrls(vault: Vault): AttachmentUrls {
       }
 
       return url.catch(() => "");
+    },
+
+    preload(path, data) {
+      cache.set(path, Promise.resolve(toObjectUrl(path, data)));
+    },
+
+    forget(path) {
+      cache.get(path)?.then(URL.revokeObjectURL, () => undefined);
+      cache.delete(path);
     },
 
     dispose() {

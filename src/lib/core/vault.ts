@@ -237,9 +237,21 @@ export class Vault {
     );
   }
 
-  async saveAttachment(data: Uint8Array, fileName: string): Promise<string> {
-    const path = joinPath(ATTACHMENTS, `${crypto.randomUUID()}${attachmentExtension(fileName)}`);
+  newAttachmentPath(fileName: string): string {
+    return joinPath(ATTACHMENTS, `${crypto.randomUUID()}${attachmentExtension(fileName)}`);
+  }
+
+  async writeAttachment(path: string, data: Uint8Array): Promise<void> {
+    if (!this.isAttachment(path)) {
+      throw new Error(`Pièce jointe invalide : ${path}`);
+    }
+
     await this.#storage.writeBinary(path, data);
+  }
+
+  async saveAttachment(data: Uint8Array, fileName: string): Promise<string> {
+    const path = this.newAttachmentPath(fileName);
+    await this.writeAttachment(path, data);
     return path;
   }
 

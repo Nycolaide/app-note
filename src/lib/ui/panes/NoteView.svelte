@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { DropdownTriggerProps } from "lapikit/components";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { ChevronLeft, EllipsisVertical, Pin, PinOff } from "@lucide/svelte";
+  import { ChevronLeft, EllipsisVertical, Pin, PinOff, Undo2 } from "@lucide/svelte";
   import { parentPath, type Note } from "$lib/core";
   import HeaderBar from "../HeaderBar.svelte";
   import MarkdownEditor from "../MarkdownEditor.svelte";
@@ -21,6 +21,8 @@
   let { app, note, controls, onmove }: Props = $props();
 
   let title = $state("");
+  let noteEditor = $state<ReturnType<typeof MarkdownEditor>>();
+  let editing = $state(false);
   const savedTitle = $derived(note.title);
   const tagSuggestions = $derived(app.tags.map(({ tag }) => tag));
 
@@ -54,6 +56,18 @@
       {/if}
     {/snippet}
     {#snippet end()}
+      {#if editing}
+        <button
+          type="button"
+          class="flat-button"
+          aria-label="Annuler"
+          title="Annuler"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={() => noteEditor?.undo()}
+        >
+          <Undo2 size={16} />
+        </button>
+      {/if}
       <button
         type="button"
         class="flat-button"
@@ -98,6 +112,8 @@
 
       {#key `${note.path}#${app.editorGeneration}`}
         <MarkdownEditor
+          bind:this={noteEditor}
+          bind:editing
           value={app.draftContent}
           onchange={(markdown) => app.updateContent(markdown)}
           resolveImage={(source) => app.resolveImage(source)}
@@ -111,6 +127,7 @@
 
 <style>
   .note-view {
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100%;

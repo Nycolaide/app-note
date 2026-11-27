@@ -12,6 +12,8 @@ import {
   imageSchema,
   insertHrCommand,
   insertImageCommand,
+  liftListItemCommand,
+  sinkListItemCommand,
   toggleEmphasisCommand,
   toggleInlineCodeCommand,
   toggleStrongCommand,
@@ -22,15 +24,17 @@ import {
   wrapInOrderedListCommand,
 } from "@milkdown/kit/preset/commonmark";
 import { gfm, insertTableCommand, toggleStrikethroughCommand } from "@milkdown/kit/preset/gfm";
-import { history } from "@milkdown/kit/plugin/history";
+import { history, undoCommand } from "@milkdown/kit/plugin/history";
 import { clipboard } from "@milkdown/kit/plugin/clipboard";
 import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
 import { upload, uploadConfig, type Uploader } from "@milkdown/kit/plugin/upload";
-import { $view, callCommand } from "@milkdown/kit/utils";
+import { $prose, $view, callCommand } from "@milkdown/kit/utils";
 import type { Node } from "@milkdown/kit/prose/model";
+import { Plugin, Selection, type EditorState } from "@milkdown/kit/prose/state";
 import type { NodeViewConstructor } from "@milkdown/kit/prose/view";
 import { linkPreviewPlugin, type LinkPreviewRenderer } from "./link-preview-plugin";
 import { continueTaskList, taskItemView, toggleTaskList } from "./task-list";
+import { toggleUnderlineCommand, underline } from "./underline";
 
 export interface MarkdownEditorOptions {
   root: HTMLElement;
@@ -39,11 +43,13 @@ export interface MarkdownEditorOptions {
   resolveImage: (source: string) => Promise<string>;
   saveImage: (file: File) => Promise<string>;
   renderLinkPreview: LinkPreviewRenderer;
+  onActiveFormatsChange?: (active: ReadonlySet<FormatCommand>) => void;
 }
 
 export type FormatCommand =
   | "bold"
   | "italic"
+  | "underline"
   | "strike"
   | "code"
   | "paragraph"
@@ -55,16 +61,84 @@ export type FormatCommand =
   | "taskList"
   | "quote"
   | "codeBlock"
-  | "rule";
+  | "rule"
+  | "indent"
+  | "outdent";
 
 export interface MarkdownEditor {
   format(command: FormatCommand): void;
   insertTable(): void;
   insertImage(source: string, alt: string): void;
+  undo(): void;
+  focus(): void;
+  focusEnd(): void;
+  revealCursor(): void;
   destroy(): Promise<void>;
 }
 
 const DEFAULT_TABLE_SIZE = { row: 3, col: 3 };
+const CURSOR_SCROLL_MARGIN = { top: 24, bottom: 96, left: 0, right: 0 };
+
+const MARK_FORMATS: [string, FormatCommand][] = [
+  ["strong", "bold"],
+  ["emphasis", "italic"],
+  ["underline", "underline"],
+  ["strike_through", "strike"],
+  ["inlineCode", "code"],
+];
+
+const HEADING_FORMATS: Record<number, FormatCommand> = { 1: "heading1", 2: "heading2", 3: "heading3" };
+
+function readActiveFormats(state: EditorState): Set<FormatCommand> {
+  const active = new Set<FormatCommand>();
+  const { $from, from, to, empty } = state.selection;
+  const cursorMarks = state.storedMarks ?? $from.marks();
+
+  for (const [markName, format] of MARK_FORMATS) {
+    const markType = state.schema.marks[markName];
+    if (!markType) continue;
+    const present = empty ? markType.isInSet(cursorMarks) : state.doc.rangeHasMark(from, to, markType);
+    if (present) active.add(format);
+  }
+
+  const block = $from.parent;
+  if (block.type.name === "heading") {
+    const heading = HEADING_FORMATS[Number(block.attrs.level)];
+    if (heading) active.add(heading);
+  } else if (block.type.name === "code_block") {
+    active.add("codeBlock");
+  } else if (block.type.name === "paragraph") {
+    active.add("paragraph");
+  }
+
+  for (let depth = $from.depth; depth > 0; depth--) {
+    const ancestor = $from.node(depth);
+    if (ancestor.type.name === "blockquote") active.add("quote");
+    if (ancestor.type.name === "ordered_list") {
+      active.add("orderedList");
+      break;
+    }
+    if (ancestor.type.name === "bullet_list") {
+      const item = $from.node(depth + 1);
+      active.add(item.attrs.checked == null ? "bulletList" : "taskList");
+      break;
+    }
+  }
+
+  return active;
+}
+
+function activeFormatsTracker(onChange: (active: ReadonlySet<FormatCommand>) => void) {
+  return $prose(
+    () =>
+      new Plugin({
+        view: (view) => {
+          onChange(readActiveFormats(view.state));
+          return { update: (updated) => onChange(readActiveFormats(updated.state)) };
+        },
+      }),
+  );
+}
 
 export async function createMarkdownEditor(options: MarkdownEditorOptions): Promise<MarkdownEditor> {
   const editor = await Editor.make()
@@ -83,6 +157,8 @@ export async function createMarkdownEditor(options: MarkdownEditorOptions): Prom
       }));
       ctx.update(editorViewOptionsCtx, (current) => ({
         ...current,
+        scrollMargin: CURSOR_SCROLL_MARGIN,
+        scrollThreshold: CURSOR_SCROLL_MARGIN,
         handleKeyDown: (view, event) => continueTaskList(view, event) || current.handleKeyDown?.(view, event) || false,
       }));
       ctx.get(listenerCtx).markdownUpdated((_, markdown, previous) => {
@@ -97,12 +173,15 @@ export async function createMarkdownEditor(options: MarkdownEditorOptions): Prom
     .use(upload)
     .use(createImageView(options.resolveImage))
     .use(taskItemView)
+    .use(underline)
+    .use(activeFormatsTracker((active) => options.onActiveFormatsChange?.(active)))
     .use(linkPreviewPlugin(options.renderLinkPreview))
     .create();
 
   const formats: Record<FormatCommand, () => void> = {
     bold: () => editor.action(callCommand(toggleStrongCommand.key)),
     italic: () => editor.action(callCommand(toggleEmphasisCommand.key)),
+    underline: () => editor.action(callCommand(toggleUnderlineCommand.key)),
     strike: () => editor.action(callCommand(toggleStrikethroughCommand.key)),
     code: () => editor.action(callCommand(toggleInlineCodeCommand.key)),
     paragraph: () => editor.action(callCommand(turnIntoTextCommand.key)),
@@ -115,12 +194,27 @@ export async function createMarkdownEditor(options: MarkdownEditorOptions): Prom
     quote: () => editor.action(callCommand(wrapInBlockquoteCommand.key)),
     codeBlock: () => editor.action(callCommand(createCodeBlockCommand.key)),
     rule: () => editor.action(callCommand(insertHrCommand.key)),
+    indent: () => editor.action(callCommand(sinkListItemCommand.key)),
+    outdent: () => editor.action(callCommand(liftListItemCommand.key)),
   };
 
   return {
     format: (command) => formats[command](),
     insertTable: () => editor.action(callCommand(insertTableCommand.key, DEFAULT_TABLE_SIZE)),
     insertImage: (src, alt) => editor.action(callCommand(insertImageCommand.key, { src, alt })),
+    undo: () => editor.action(callCommand(undoCommand.key)),
+    focus: () => editor.action((ctx) => ctx.get(editorViewCtx).focus()),
+    focusEnd: () =>
+      editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        view.dispatch(view.state.tr.setSelection(Selection.atEnd(view.state.doc)).scrollIntoView());
+        view.focus();
+      }),
+    revealCursor: () =>
+      editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        view.dispatch(view.state.tr.scrollIntoView());
+      }),
     destroy: async () => {
       await editor.destroy();
     },
@@ -139,16 +233,49 @@ function createUploader(saveImage: (file: File) => Promise<string>): Uploader {
   };
 }
 
+type ImageState = "loading" | "ready" | "error";
+
+const IMAGE_STATUS: Record<ImageState, string> = {
+  loading: "Chargement de l’image…",
+  ready: "",
+  error: "Image introuvable",
+};
+
 function createImageView(resolveImage: (source: string) => Promise<string>) {
   return $view(imageSchema.node, (): NodeViewConstructor => (initial) => {
-    const dom = document.createElement("img");
+    const dom = document.createElement("span");
+    const image = document.createElement("img");
+    const status = document.createElement("span");
+    dom.className = "image-frame";
+    status.className = "image-status";
+    dom.append(image, status);
+
     let current = initial;
+    let source: string | undefined;
+
+    const setState = (state: ImageState) => {
+      dom.dataset.state = state;
+      dom.setAttribute("aria-busy", String(state === "loading"));
+      status.textContent = IMAGE_STATUS[state];
+    };
+
+    image.addEventListener("load", () => setState("ready"));
+    image.addEventListener("error", () => setState("error"));
 
     const render = (node: Node) => {
-      dom.alt = String(node.attrs.alt ?? "");
-      dom.title = String(node.attrs.title ?? "");
-      resolveImage(String(node.attrs.src ?? "")).then((url) => {
-        if (current === node) dom.src = url;
+      image.alt = String(node.attrs.alt ?? "");
+      image.title = String(node.attrs.title ?? "");
+
+      const nextSource = String(node.attrs.src ?? "");
+      if (nextSource === source) return;
+      source = nextSource;
+
+      setState("loading");
+      image.removeAttribute("src");
+      resolveImage(nextSource).then((url) => {
+        if (current !== node) return;
+        if (url) image.src = url;
+        else setState("error");
       });
     };
 
